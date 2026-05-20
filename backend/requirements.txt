@@ -1,0 +1,49 @@
+# ─────────────────────────────────────────────
+# Web Framework
+# ─────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+httpx
+
+# ─────────────────────────────────────────────
+# Database
+# ─────────────────────────────────────────────
+motor
+pymongo
+
+# ─────────────────────────────────────────────
+# Config & Validation
+# ─────────────────────────────────────────────
+pydantic
+pydantic-settings
+python-dotenv
+
+# ─────────────────────────────────────────────
+# Auth
+# ─────────────────────────────────────────────
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+
+# ─────────────────────────────────────────────
+# AI / LLM
+# ─────────────────────────────────────────────
+openai
+anthropic
+langchain
+langchain-openai
+langchain-anthropic
+langchain-community
+
+# ─────────────────────────────────────────────
+# Embeddings & Vector Store
+# ─────────────────────────────────────────────
+sentence-transformers
+faiss-cpu
+
+# ─────────────────────────────────────────────
+# Data Science & ML
+# ─────────────────────────────────────────────
+numpy
+pandas
+scikit-learn
