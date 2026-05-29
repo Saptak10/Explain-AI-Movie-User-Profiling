@@ -1,0 +1,313 @@
+# Technical Documentation
+## Explainable AI Movie User Profiling System
+### `backend/app/ai/ai.py`
+
+---
+
+## 1. Overview
+
+This module implements a **Human-Centered AI (HCAI) recommendation system** that builds
+interpretable user profiles from movie rating data and generates transparent recommendations.
+
+The system is built on the **MovieLens Latest Small** dataset (100k ratings, 9,742 movies,
+610 users) and combines a neural autoencoder with three explainability methods: a built-in
+soft XAI explanation, SHAP, and LIME.
+
+The core design principle is that the user's latent profile is expressed in a
+**human-readable genre space** (18 dimensions) rather than an anonymous bottleneck,
+making every part of the system interpretable without sacrificing predictive quality.
+
+---
+
+## 2. Architecture: Soft-Regularized HCAI Autoencoder
+
+### 2.1 High-Level Design
+
+```
+Input (user ratings, 9742-dim)
+        |
+   [ Encoder L1 ]  Linear(9742 → 128), ReLU
+        |
+   [ Encoder L2 ]  Linear(128 → 18), Sigmoid
+        |
+  Latent Profile   18-dim genre space  ← human-readable
+        |
+   [ Decoder L1 ]  Linear(18 → 128), ReLU, Dropout(0.4)
+        |
+   [ Decoder L2 ]  Linear(128 → 9742), Sigmoid × 5
+        |
+ Output (predicted ratings, 9742-dim, scale 0–5)
+```
+
+The bottleneck dimension **matches the number of genres (18)**, so each latent
+dimension directly corresponds to a named genre (Action, Comedy, Sci-Fi, etc.).
+
+### 2.2 Knowledge Injection
+
+At initialization, the encoder weights are seeded from the **pure genre matrix**
+M_genre (shape: 18 × 9742), where each entry is 1 if a movie belongs to that genre
+and 0 otherwise.
+
+This gives the model a strong, meaningful starting point and ensures the latent
+space retains genre semantics throughout training.
+
+### 2.3 Semantic Regularization (Soft Constraint)
+
+During training, a **semantic loss** term penalizes the encoder weights for drifting
+too far from the genre-matrix prior:
+
+```
+L_semantic = MSE(encoder_l1.weight[:18, :],  M_genre^T)
+           + MSE(encoder_l2.weight[:, :18],   Identity_18)
+```
+
+Combined with the prediction loss:
+
+```
+L_total = L_prediction + λ × L_semantic      (λ = 0.05)
+```
+
+`torch.mean()` is used (not `torch.sum()`) to prevent the semantic term from
+numerically dominating the prediction loss across 9742 × 18 = 175,356 entries.
+
+### 2.4 Weight Clipping
+
+After each optimizer step, encoder weights are clipped within ε = 0.15 of the
+genre-matrix prior. This acts as a hard constraint enforcing the semantic structure
+even when the gradient pushes against it.
+
+---
+
+## 3. Training
+
+| Parameter       | Value         |
+|-----------------|---------------|
+| Optimizer       | Adam          |
+| Learning rate   | 0.01          |
+| Weight decay    | 1e-5          |
+| Epochs          | 25            |
+| Batch size      | 32            |
+| Dropout         | 0.4           |
+| λ (reg. weight) | 0.05          |
+| ε (clip radius) | 0.15          |
+
+### Loss Function
+
+A **masked MSE** is used to compute prediction loss only over movies the user
+has actually rated, ignoring zero-padded (unseen) entries:
+
+```python
+loss = sum((pred - target)^2 * mask) / (count_rated + 1e-8)
+```
+
+---
+
+## 4. Human Override System (HCAI)
+
+The system supports three levels of human intervention:
+
+### Level 1 — Direct Profile Editing
+The user manually sets genre affinity values (e.g., Sci-Fi = 95%, Comedy = 5%).
+The decoder translates this directly into movie scores without any AI correction.
+The model acts purely as a genre-to-film translator.
+
+```python
+edited_profile[0, GENRES.index("Sci-Fi")] = 0.95
+scores = model.recommend_from_edited_profile(edited_profile)
+```
+
+### Level 2 — Override Impact Transparency
+After a user applies an override, the system shows which movies were most
+boosted or suppressed, making the override's effect fully visible:
+
+```python
+impact = model.explain_override_impact(ann_output, final_output, idx_to_title)
+# Returns: {"boosted": [...], "suppressed": [...]}
+```
+
+### Level 3 — Hybrid Override Path
+The user expresses preferences in natural language categories
+(`strongly_increase`, `slightly_reduce`, etc.), which are mapped to float
+values and added as a genre-weighted bias on top of the AI output:
+
+```python
+override_tensor = build_override_tensor({"Sci-Fi": "strongly_increase"}, num_genres)
+scores, profile = model(user_vector, user_overrides=override_tensor, alpha=3.0)
+```
+
+The override tensor is computed as:
+
+```
+explicit_bias = override_tensor @ M_genre     (1×18) @ (18×9742) → (1×9742)
+final_output  = ann_output + α × explicit_bias
+```
+
+---
+
+## 5. Explainability Methods (XAI)
+
+### 5.1 Soft XAI — Fuzzy Semantic Thresholding
+
+Built-in explanation using the **effective weight matrix**:
+
+```
+eff_weights = encoder_l2.weight @ encoder_l1.weight    (18 × 9742)
+```
+
+Column `movie_idx` gives the genre projection weights for that film.
+Combined with the user's latent profile, two tiers of explanation are produced:
+
+| Tier         | Condition                              | Output                    |
+|--------------|----------------------------------------|---------------------------|
+| Core genres  | weight > 0.85 AND user affinity > 0.60 | Strong explicit mention   |
+| Subtle genres| 0.20 < weight ≤ 0.85                   | Supplementary transparency|
+
+**Example output:**
+> "Inception matches your strong interest in: Sci-Fi, Thriller.
+> Subtle genre influences detected: Action."
+
+### 5.2 SHAP (SHapley Additive exPlanations)
+
+**Type:** Local, exact (KernelSHAP)
+**Input space:** 18-dimensional latent genre profile
+**Target:** Predicted star rating for a specific movie
+
+KernelSHAP is applied to the **decoder sub-network only**. This is intentional:
+the latent genre profile is already human-readable, so SHAP values directly answer
+*"how many stars did my Sci-Fi interest contribute to this recommendation?"*
+
+```python
+shap_values = explain_with_shap(model, user_profile, movie_idx, background_profiles)
+# Returns: [("Sci-Fi", +0.42), ("Drama", -0.18), ...]
+```
+
+Background sample: 30 randomly selected user profiles used as the SHAP baseline.
+
+### 5.3 LIME (Local Interpretable Model-agnostic Explanations)
+
+**Type:** Local, approximate
+**Method:** Gaussian perturbation + Ridge regression in genre space
+
+LIME perturbs the user's genre profile with Gaussian noise (σ = 0.15),
+scores each variant with the decoder, then fits a local linear model:
+
+```
+perturbed_profiles  (300 × 18)  →  decoder  →  scores  (300,)
+Ridge regression: score ≈ Σ (coeff_i × genre_i)
+```
+
+Coefficients are the local genre importance estimates for that specific user/film.
+
+**Limitation:** Results vary across random seeds. Suitable for visualization;
+use SHAP for reproducible quantitative comparisons.
+
+### 5.4 Permutation Feature Importance
+
+**Type:** Global, model-agnostic
+
+For each of the 18 genre dimensions, the column is randomly shuffled across all
+610 users and the increase in masked MSE is measured:
+
+```
+importance(genre_i) = mean over 5 repeats of:
+    MSE(permuted_i) - MSE(baseline)
+```
+
+A large MSE increase means that genre dimension is globally important for
+recommendation quality across all users.
+
+---
+
+## 6. Data Pipeline
+
+### Input Files (MovieLens Latest Small)
+
+| File          | Content                              | Rows    |
+|---------------|--------------------------------------|---------|
+| `ratings.csv` | userId, movieId, rating, timestamp   | 100,836 |
+| `movies.csv`  | movieId, title, genres               | 9,742   |
+| `tags.csv`    | userId, movieId, tag, timestamp      | 3,683   |
+| `links.csv`   | movieId, imdbId, tmdbId              | 9,742   |
+
+### Index Mapping
+
+MovieLens IDs are non-contiguous (sparse). The pipeline creates dense index
+mappings for use in PyTorch tensors:
+
+```python
+movie_id_to_idx = {movie_id: dense_idx for dense_idx, movie_id in enumerate(...)}
+user_id_to_idx  = {user_id:  dense_idx for dense_idx, user_id  in enumerate(...)}
+```
+
+### Rating Matrix
+
+A dense NumPy matrix R of shape `(num_users × num_movies)` is built from the
+ratings CSV. Unrated entries are 0. Dataset sparsity is approximately **98.3%**.
+
+---
+
+## 7. Genre Space
+
+The system uses 18 genres from the MovieLens taxonomy:
+
+```
+Action, Adventure, Animation, Children's, Comedy, Crime,
+Documentary, Drama, Fantasy, Film-Noir, Horror, Musical,
+Mystery, Romance, Sci-Fi, Thriller, War, Western
+```
+
+Each movie is represented as a binary 18-dimensional vector. The genre matrix
+M_genre has shape `(9742 × 18)`.
+
+---
+
+## 8. Key Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| Bottleneck = 18 (genre count) | Latent dimensions map 1:1 to named genres |
+| Knowledge injection at init | Faster convergence, genre structure preserved from start |
+| Masked MSE loss | Avoids penalizing predictions on unseen movies |
+| SHAP on decoder only | Genre profile is already interpretable; SHAP adds per-genre contribution |
+| LIME in genre space | 18-dim perturbation is fast and readable vs. 9742-dim raw space |
+| `torch.mean()` in semantic loss | Prevents numerical domination over prediction loss |
+| Weight clipping after each step | Hard constraint keeping encoder close to genre-matrix prior |
+
+---
+
+## 9. Dependencies
+
+```
+torch          >= 2.0
+pandas         >= 2.0
+numpy          >= 1.24
+shap           (optional, for Method 2)
+scikit-learn   (optional, for Method 3)
+```
+
+---
+
+## 10. Usage Example
+
+```python
+# Load data and build matrices
+ratings_df, movies_df = load_movielens_data()
+
+# Initialize and train model
+model = SoftRegularizedHCAIAutoEncoder(num_movies, num_genres, pure_genre_matrix_np)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+for epoch in range(25):
+    t_loss, p_loss, s_loss = train_step(model, optimizer, batch, mask)
+
+# Inference
+model.eval()
+scores, latent_profile = model(user_vector)
+
+# Human override
+overrides = build_override_tensor({"Sci-Fi": "strongly_increase"}, num_genres)
+scores_overridden, _ = model(user_vector, user_overrides=overrides, alpha=3.0)
+
+# Explanation
+explanation = generate_soft_xai_explanation(title, movie_idx, model, latent_profile[0])
+```
