@@ -8,9 +8,10 @@ export function AuthProvider({ children }) {
   })
 
   const login = (token, user_id, username) => {
+    const u = { id: user_id, username }
     localStorage.setItem('token', token)
-    localStorage.setItem('user', JSON.stringify({ id: user_id, username }))
-    setUser({ id: user_id, username })
+    localStorage.setItem('user', JSON.stringify(u))
+    setUser(u)
   }
 
   const logout = () => {
@@ -19,7 +20,11 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
-  return <Ctx.Provider value={{ user, login, logout }}>{children}</Ctx.Provider>
+  return (
+    <Ctx.Provider value={{ user, login, logout }}>
+      {children}
+    </Ctx.Provider>
+  )
 }
 
 export const useAuth = () => useContext(Ctx)

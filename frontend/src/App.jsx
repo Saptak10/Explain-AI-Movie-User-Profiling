@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage'
 import ProfilePage from './pages/ProfilePage'
 import RatingsPage from './pages/RatingsPage'
 import RecommendPage from './pages/RecommendPage'
+import SUSPage from './pages/SUSPage'
 
 function Guard({ children }) {
   const { user } = useAuth()
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/rate"      element={<Guard><RatingsPage /></Guard>} />
         <Route path="/profile"   element={<Guard><ProfilePage /></Guard>} />
         <Route path="/recommend" element={<Guard><RecommendPage /></Guard>} />
+        <Route path="/sus"       element={<Guard><SUSPage /></Guard>} />
         <Route path="*"          element={<Navigate to={user ? '/rate' : '/login'} replace />} />
       </Routes>
     </>

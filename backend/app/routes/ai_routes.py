@@ -70,5 +70,12 @@ async def explain(req: ExplainRequest, user_id: int = Depends(get_current_user))
 
 
 @router.get("/importance")
-async def importance(user_id: int = Depends(get_current_user)):
+async def importance(_: int = Depends(get_current_user)):
     return {"importance": ai_service.global_importance}
+
+
+@router.post("/user/mark-edited")
+async def mark_edited(user_id: int = Depends(get_current_user)):
+    """Record that the user has completed at least one preference edit."""
+    await db.execute("UPDATE users SET has_edited = 1 WHERE id = ?", (user_id,))
+    return {"status": "ok"}

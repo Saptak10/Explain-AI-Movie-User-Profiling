@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { aiApi } from '../services/api'
 
@@ -49,6 +49,13 @@ export default function ProfilePage() {
       .finally(() => setLoading(false))
   }, [])
 
+  // Sort order is fixed to the AI profile — never re-sorted while editing,
+  // so dragging a slider doesn't cause genres to jump around.
+  const sortedGenres = useMemo(() => {
+    if (!profile) return GENRES
+    return GENRES.slice().sort((a, b) => (profile[b] || 0) - (profile[a] || 0))
+  }, [profile])
+
   const handleChange = (genre, val) => {
     setEdited(prev => ({ ...prev, [genre]: val }))
   }
@@ -72,8 +79,7 @@ export default function ProfilePage() {
   if (loading) return <div className="loading">Analysing your taste…</div>
 
   const display = editMode ? edited : profile
-  const sorted = GENRES.slice().sort((a, b) => (display[b] || 0) - (display[a] || 0))
-  const topGenre = sorted[0]
+  const topGenre = sortedGenres[0]
 
   return (
     <div className="page">
@@ -112,7 +118,7 @@ export default function ProfilePage() {
           {editMode ? 'Manual Genre Profile' : 'AI-Inferred Genre Profile'}
         </div>
         <div className="genre-list">
-          {sorted.map(genre => (
+          {sortedGenres.map(genre => (
             <GenreRow
               key={genre}
               genre={genre}
