@@ -33,7 +33,8 @@ export const aiApi = {
 }
 
 export const susApi = {
-  getQuestions: ()          => client.get('/api/sus/questions'),
-  submit:       (responses) => client.post('/api/sus/submit', { responses }),
-  getResults:   ()          => client.get('/api/sus/results'),
+  getQuestions: ()                                                    => client.get('/api/sus/questions'),
+  submit:       (responses, age_group, degree_job, netflix_experience) =>
+                  client.post('/api/sus/submit', { responses, age_group, degree_job, netflix_experience }),
+  getResults:   ()                                                    => client.get('/api/sus/results'),
 }

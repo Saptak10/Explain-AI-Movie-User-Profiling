@@ -4,17 +4,23 @@ This document describes every file that was created or modified to wire the AI l
 a running full-stack application with user authentication, movie ratings, a profile page,
 and an explainable recommendations page.
 
+> **Last updated: 2026-06-17**
+> Includes: A/B version assignment (Version O / Version N), per-movie XAI editing,
+> SUS questionnaire with demographic pre-questions, and the complete data flow.
+
 ---
 
 ## Table of Contents
 
 1. [Architecture Overview](#1-architecture-overview)
 2. [Tech Stack Decisions](#2-tech-stack-decisions)
-3. [Backend — File-by-File](#3-backend--file-by-file)
+3. [Experiment Design — Version O vs Version N](#3-experiment-design--version-o-vs-version-n)
+4. [Backend — File-by-File](#4-backend--file-by-file)
    - [main.py (modified)](#mainpy-modified)
    - [config/config.py](#configconfigpy)
    - [database/db.py](#databasedbpy)
    - [schemas/user\_schema.py (modified)](#schemasuser_schemapy-modified)
+   - [schemas/sus\_schema.py](#schemassus_schemapy)
    - [schemas/ai\_schema.py](#schemasai_schemapy)
    - [utils/jwt\_utils.py](#utilsjwt_utilspy)
    - [services/auth\_service.py](#servicesauth_servicepy)
@@ -22,7 +28,8 @@ and an explainable recommendations page.
    - [routes/auth\_routes.py](#routesauth_routespy)
    - [routes/movie\_routes.py](#routesmovie_routespy)
    - [routes/ai\_routes.py](#routesai_routespy)
-4. [Frontend — File-by-File](#4-frontend--file-by-file)
+   - [routes/sus\_routes.py](#routessus_routespy)
+5. [Frontend — File-by-File](#5-frontend--file-by-file)
    - [main.jsx (modified)](#mainjsx-modified)
    - [App.jsx (modified)](#appjsx-modified)
    - [index.css (modified)](#indexcss-modified)
@@ -35,10 +42,11 @@ and an explainable recommendations page.
    - [pages/RatingsPage.jsx](#pagesratingspagejsx)
    - [pages/ProfilePage.jsx](#pagesprofilepagejsx)
    - [pages/RecommendPage.jsx](#pagesrecommendpagejsx)
-5. [API Endpoint Reference](#5-api-endpoint-reference)
-6. [Data Flow Diagrams](#6-data-flow-diagrams)
-7. [How to Run](#7-how-to-run)
-8. [Dependencies Added](#8-dependencies-added)
+   - [pages/SUSPage.jsx](#pagessuspagejsx)
+6. [API Endpoint Reference](#6-api-endpoint-reference)
+7. [Data Flow Diagrams](#7-data-flow-diagrams)
+8. [How to Run](#8-how-to-run)
+9. [Dependencies Added](#9-dependencies-added)
 
 ---
 
@@ -81,6 +89,9 @@ and an explainable recommendations page.
 
 ## 2. Tech Stack Decisions
 
+(unchanged — see table below)
+
+
 | Decision | Choice | Reason |
 |---|---|---|
 | Database | SQLite (built-in `sqlite3`) | No MongoDB server needed; zero setup; sufficient for a demo |
@@ -94,7 +105,52 @@ and an explainable recommendations page.
 
 ---
 
-## 3. Backend — File-by-File
+## 3. Experiment Design — Version O vs Version N
+
+The system implements a **between-subjects A/B experiment** to compare transparent versus opaque AI recommendations.
+
+### Assignment
+
+When a user registers, `auth_service.register()` calls `random.choice(["O", "N"])` and stores the result in the `users.version` column. The assigned version is returned in the JWT login response and stored in `localStorage` via `AuthContext`. Every page reload re-reads the version from `localStorage`, so the assignment is permanent for the lifetime of the account.
+
+### Version O — Transparent AI
+
+| Property | Detail |
+|---|---|
+| Badge | Green pill: **Version O — Transparent AI** |
+| Guidance text | "You are in the Transparent AI condition. You can see why each movie was recommended and adjust the genre weights that drive your recommendations." |
+| Edit Preferences button | **Shown** on every recommendation card |
+| XAI explanation | Loaded on expand: genre contributions from the encoder weights × user profile |
+| Gate before survey | **Yes** — "Continue to Survey" is disabled until the user has clicked Apply at least once. This is enforced both in the UI (`hasEdited` state) and in the database (`users.has_edited = 1` via `POST /api/user/mark-edited`). |
+
+**What the user does in Version O:**
+1. Reviews recommendations
+2. Expands a card → sees why the movie was recommended (genre contribution bar chart + natural-language summary)
+3. Adjusts genre weights using the 5-level override buttons (−−, −, ○, +, ++)
+4. Clicks "Apply & Refresh Recommendations" → list updates immediately
+5. After at least one Apply, "Continue to Survey" becomes active
+
+### Version N — Standard AI
+
+| Property | Detail |
+|---|---|
+| Badge | Grey pill: **Version N — Standard AI** |
+| Guidance text | "You are in the Standard AI condition. You receive AI-generated recommendations without explanations. Simply review the list and continue to the survey when ready." |
+| Edit Preferences button | **Hidden** — recommendation cards show only title + score bar |
+| XAI explanation | Not available |
+| Gate before survey | **None** — "Continue to Survey" is always enabled |
+
+**What the user does in Version N:**
+1. Reviews the recommendation list
+2. Clicks "Continue to Survey" directly
+
+### Why this design
+
+The research hypothesis is that users exposed to transparent, editable AI recommendations (Version O) will report higher system usability (SUS score) and better understanding of recommendations than users in the black-box condition (Version N). The SUS questionnaire and demographic questions are identical for both groups.
+
+---
+
+## 4. Backend — File-by-File
 
 ### `main.py` (modified)
 
@@ -159,7 +215,10 @@ A thin async wrapper around Python's built-in `sqlite3`. Since `sqlite3` is sync
 CREATE TABLE users (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     username         TEXT UNIQUE NOT NULL,
-    hashed_password  TEXT NOT NULL
+    hashed_password  TEXT NOT NULL,
+    has_edited       INTEGER NOT NULL DEFAULT 0,  -- 1 after first Apply in Version O
+    sus_done         INTEGER NOT NULL DEFAULT 0,  -- 1 after SUS submission
+    version          TEXT    NOT NULL DEFAULT 'O' -- 'O' (Transparent) or 'N' (Standard)
 );
 
 CREATE TABLE ratings (
@@ -170,7 +229,28 @@ CREATE TABLE ratings (
     FOREIGN KEY (user_id) REFERENCES users(id),
     UNIQUE(user_id, movie_id)     -- re-rating a movie replaces the old value
 );
+
+CREATE TABLE sus_responses (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    question_idx INTEGER NOT NULL,  -- 0..9
+    response     INTEGER NOT NULL,  -- 1..5
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(user_id, question_idx)
+);
+
+CREATE TABLE demographics (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER NOT NULL,
+    age_group           TEXT,     -- '18-23' | '24-30' | '30-45' | '>45'
+    degree_job          TEXT,     -- free text: degree or job title
+    netflix_experience  INTEGER,  -- 1..5 Likert
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(user_id)
+);
 ```
+
+The `init_db()` function also handles **schema migration** for existing databases: it uses `ALTER TABLE … ADD COLUMN` with try/except for each new column, so the server can be restarted without wiping existing user data.
 
 **Public functions:**
 
@@ -185,14 +265,34 @@ CREATE TABLE ratings (
 
 ### `schemas/user_schema.py` (modified)
 
-**Before:** Empty.
-
 Two Pydantic models for the auth API:
 
 - `AuthRequest` — request body for both register and login: `{username: str, password: str}`
-- `TokenResponse` — what the server returns: `{token: str, user_id: int, username: str}`
+- `TokenResponse` — what the server returns: `{token: str, user_id: int, username: str, version: str}`
 
-Pydantic automatically validates incoming JSON and returns HTTP 422 if required fields are missing or have the wrong type.
+The `version` field (`"O"` or `"N"`) is assigned at registration and returned on every login so the frontend always knows which condition the user is in.
+
+---
+
+### `schemas/sus_schema.py`
+
+**Location:** `backend/app/schemas/sus_schema.py`
+
+Pydantic model for the combined SUS + demographics submission:
+
+```python
+class SUSRequest(BaseModel):
+    responses:          list[int]  # exactly 10 values, each 1–5
+    age_group:          str        # '18-23' | '24-30' | '30-45' | '>45'
+    degree_job:         str        # free text
+    netflix_experience: int        # 1–5
+
+    @field_validator("responses")  → exactly 10 items, each in 1..5
+    @field_validator("age_group")  → must be one of the four valid options
+    @field_validator("netflix_experience") → must be in 1..5
+```
+
+All three demographic fields are required — the submit button is disabled in the frontend until they are all filled in.
 
 ---
 
@@ -261,13 +361,14 @@ def _verify(password, stored) → bool
 **`register(username, password)`:**
 1. Checks if the username already exists — raises HTTP 400 if so
 2. Hashes the password
-3. Inserts into the `users` table
-4. Returns `{id, username}`
+3. Calls `random.choice(["O", "N"])` to assign the experiment version
+4. Inserts into the `users` table with the assigned version
+5. Returns `{id, username, version}`
 
 **`login(username, password)`:**
 1. Looks up the user by username
 2. Verifies the password hash — raises HTTP 401 if wrong
-3. Returns `{id, username}`
+3. Returns `{id, username, version}` — the stored version is read from the DB so it is consistent across sessions
 
 ---
 
@@ -321,16 +422,41 @@ Pre-computes and caches everything the API routes need:
 
 ### `routes/auth_routes.py`
 
-**Location:** `backend/app/routes/auth_routes.py` (new file)
+**Location:** `backend/app/routes/auth_routes.py`
 
 Two endpoints mounted at `/api/auth`:
 
 ```
-POST /api/auth/register   body: {username, password}  → {token, user_id, username}
-POST /api/auth/login      body: {username, password}  → {token, user_id, username}
+POST /api/auth/register   body: {username, password}  → {token, user_id, username, version}
+POST /api/auth/login      body: {username, password}  → {token, user_id, username, version}
 ```
 
-Both call the corresponding `auth_service` function and then `create_token()` to issue a JWT.
+Both call the corresponding `auth_service` function and then `create_token()` to issue a JWT. The `version` field (`"O"` or `"N"`) is now included in every auth response.
+
+---
+
+### `routes/sus_routes.py`
+
+**Location:** `backend/app/routes/sus_routes.py`
+
+Four endpoints mounted at `/api/sus`:
+
+| Method | Path | Auth | Request body | Response |
+|---|---|---|---|---|
+| GET | `/questions` | None | — | `{questions: [string × 10]}` |
+| POST | `/submit` | Bearer | `SUSRequest` | `{done: true}` |
+| GET | `/results` | Bearer | — | `{score: float 0–100}` |
+
+**`POST /sus/submit` saves three things atomically:**
+1. All 10 SUS responses into `sus_responses` (INSERT OR REPLACE per question index)
+2. Demographic data into `demographics` (INSERT OR REPLACE for the user)
+3. Sets `users.sus_done = 1`
+
+**SUS scoring algorithm** (standard Brooke 1996):
+- Odd-indexed questions (0, 2, 4, 6, 8): contribution = `response − 1`
+- Even-indexed questions (1, 3, 5, 7, 9): contribution = `5 − response`
+- Total = sum of all contributions × 2.5
+- Result range: 0 (worst) to 100 (best)
 
 ---
 
@@ -369,7 +495,7 @@ All calls to `ai_service` are wrapped in `asyncio.to_thread()` to prevent PyTorc
 
 ---
 
-## 4. Frontend — File-by-File
+## 5. Frontend — File-by-File
 
 ### `main.jsx` (modified)
 
@@ -465,9 +591,9 @@ React context that stores the currently logged-in user (`{id, username}`) and th
 
 Persists to `localStorage` so a browser refresh does not log the user out:
 
-- `login(token, user_id, username)` → writes to `localStorage`, updates state
+- `login(token, user_id, username, version)` → writes to `localStorage` as `{id, username, version}`, updates state
 - `logout()` → clears `localStorage`, sets user to `null`
-- `useAuth()` hook → any component can call this to read the user or trigger login/logout
+- `useAuth()` hook → any component can call this to read `user.version` or trigger login/logout
 
 ---
 
@@ -566,50 +692,83 @@ The top genre name is shown in the subtitle in AI mode.
 
 ### `pages/RecommendPage.jsx`
 
-**Location:** `frontend/src/pages/RecommendPage.jsx` (new file)
+**Location:** `frontend/src/pages/RecommendPage.jsx`
 
-The most interactive page. Two-column layout (single column on mobile via `@media`):
+The most interactive page. Full-width single-column list of recommendation cards.
 
-**Left column — recommendation cards:**
+**Version-conditional rendering** — reads `user.version` from `AuthContext`:
 
-Each card shows:
-- Rank number (`#1`, `#2`, …)
-- Movie title
-- Score bar — gradient fill proportional to predicted score out of 5
-- "Why?" button → calls `POST /api/explain` with method `"soft"`, opens the `ExplainModal`
-
-**Right column — Genre Override panel (sticky):**
-
-18 genres, each with a 5-level button group:
-
-| Button | Value sent to API | OVERRIDE\_MAP equivalent |
+| Element | Version O (Transparent) | Version N (Standard) |
 |---|---|---|
-| `−−` | `"stark dämpfen"` | −2.0 |
-| `−` | `"leicht dämpfen"` | −1.0 |
-| `○` | `"neutral"` | 0.0 (default) |
-| `+` | `"leicht verstärken"` | +1.0 |
-| `++` | `"stark verstärken"` | +2.0 |
+| Version badge | Green "Version O — Transparent AI" | Grey "Version N — Standard AI" |
+| Guidance banner | "You can see why each movie was recommended and adjust genre weights…" | "You receive AI-generated recommendations without explanations…" |
+| Task banner | "Edit at least one movie's preferences before continuing" (hidden after first Apply) | Not shown |
+| Edit Preferences button | Shown on every card (`showEdit=true`) | Hidden (`showEdit=false`) |
+| XAI expand panel | Available on expand | Not shown |
+| Continue to Survey | Disabled until `hasEdited=true` | Always enabled |
 
-"Apply Overrides" sends only non-neutral genres to `POST /api/recommend` and refreshes the list.
-Active override count is shown as a badge. "Reset All" clears all overrides and reloads.
+**`RecCard` component:**
 
-**`ExplainModal` component (inline):**
+Each card shows rank, movie title, and score bar. When `showEdit=true` (Version O only), an "Edit Preferences ▼ / Close ▲" toggle button appears.
 
-Shown when the user clicks "Why?" on a recommendation. Displays:
-- The soft explanation text from `generate_soft_xai_explanation()` (in the teammate's German if core genres are found, or a fallback message)
-- A horizontal bar chart of the top 8 genre contributions — positive (blue) and negative (red) — normalised to the maximum absolute value
-- A note explaining what the bars mean
+**`EditPanel` component (Version O only):**
+
+Loaded asynchronously from `POST /api/explain` when a card is first expanded. Displays:
+- Natural-language explanation text from the AI
+- Top-5 genre contributions as mini bar chart
+- 5-level override buttons per genre (−−, −, ○, +, ++)
+- "Apply & Refresh Recommendations" button
+
+On first Apply: sets `hasEdited=true` in React state + calls `POST /api/user/mark-edited` to persist to DB.
 
 ---
 
-## 5. API Endpoint Reference
+### `pages/SUSPage.jsx`
+
+**Location:** `frontend/src/pages/SUSPage.jsx`
+
+Combined demographic questionnaire + System Usability Scale. Structured in two sections separated by a horizontal divider:
+
+**Section 1 — Background Information (3 questions):**
+
+| # | Question | Input type | Options / Range |
+|---|---|---|---|
+| 1 | How old are you? | Radio buttons (pill style) | 18-23 / 24-30 / 30-45 / >45 |
+| 2 | Which degree are you currently taking or what is your job title? | Text input | Free text |
+| 3 | I have experience with movie recommendation platforms such as Netflix | Likert 1–5 | 1 = Strongly Disagree, 5 = Strongly Agree |
+
+All three are required. The submit button stays disabled until all demographic fields are completed **and** all 10 SUS questions are answered.
+
+**Section 2 — System Usability Scale (10 questions):**
+
+Standard Brooke (1996) SUS questionnaire, identical for both Version O and N:
+1. I think that I would like to use this system frequently.
+2. I found the system unnecessarily complex.
+3. I thought the system was easy to use.
+4. I think that I would need the support of a technical person to use this system.
+5. I found the various functions in this system were well integrated.
+6. I thought there was too much inconsistency in this system.
+7. I would imagine that most people would learn to use this system very quickly.
+8. I found the system very cumbersome to use.
+9. I felt very confident using the system.
+10. I needed to learn a lot of things before I could get going with this system.
+
+Each question uses circular radio buttons (1–5). Answered questions have their number circle turn from grey to indigo. Progress counter at the bottom.
+
+**Submission:** `POST /api/sus/submit` with `{responses, age_group, degree_job, netflix_experience}`.
+
+**Post-submission:** "Thank You!" completion screen with a "Back to Recommendations" button.
+
+---
+
+## 6. API Endpoint Reference
 
 ### Auth — `/api/auth`
 
 | Method | Path | Auth | Request body | Response |
 |---|---|---|---|---|
-| POST | `/register` | None | `{username, password}` | `{token, user_id, username}` |
-| POST | `/login` | None | `{username, password}` | `{token, user_id, username}` |
+| POST | `/register` | None | `{username, password}` | `{token, user_id, username, version}` |
+| POST | `/login` | None | `{username, password}` | `{token, user_id, username, version}` |
 
 ### Movies — `/api/movies`
 
@@ -631,19 +790,40 @@ All endpoints below require `Authorization: Bearer <token>`.
 | POST | `/recommend/edited-profile` | `{profile: dict, top_n}` | `{recommendations: [...]}` |
 | POST | `/explain` | `{movie_id: int, method: "soft"\|"lime"}` | `{method, text?, contributions: [{genre, value}]}` |
 | GET | `/importance` | — | `{importance: {genre: float}}` |
+| POST | `/user/mark-edited` | — | `{status: "ok"}` |
+
+### SUS — `/api/sus`
+
+| Method | Path | Auth | Request body | Response |
+|---|---|---|---|---|
+| GET | `/questions` | None | — | `{questions: [string × 10]}` |
+| POST | `/submit` | Bearer | `{responses, age_group, degree_job, netflix_experience}` | `{done: true}` |
+| GET | `/results` | Bearer | — | `{score: float 0–100}` |
 
 ---
 
-## 6. Data Flow Diagrams
+## 7. Data Flow Diagrams
 
-### Login
+### Login / Registration
 
 ```
-User submits form
-    → POST /api/auth/login {username, password}
-    → auth_service.login() verifies sha256 hash in SQLite
+User registers:
+    → POST /api/auth/register {username, password}
+    → auth_service.register()
+        → hash password
+        → random.choice(["O","N"]) → version assigned
+        → INSERT INTO users (username, hashed_password, version)
     → create_token(user_id) → JWT
-    → stored in localStorage
+    → {token, user_id, username, version} returned
+    → AuthContext.login() stores {id, username, version} in localStorage
+    → navigate to /rate
+
+User logs in:
+    → POST /api/auth/login {username, password}
+    → auth_service.login() verifies sha256 hash
+    → SELECT version FROM users → returns stored version
+    → {token, user_id, username, version} returned
+    → AuthContext.login() updates localStorage
     → navigate to /rate
 ```
 
@@ -700,9 +880,25 @@ User clicks "Why?" on a movie
     → ExplainModal shows text + bar chart
 ```
 
+### SUS + Demographics submission
+
+```
+SUSPage — user completes all fields:
+    Demographics: age group (radio), degree/job (text), Netflix experience (1–5 Likert)
+    SUS: 10 questions answered (1–5 each)
+    → "Submit Survey" enabled
+
+    → POST /api/sus/submit {responses:[...], age_group, degree_job, netflix_experience}
+    → sus_routes.submit_sus()
+        → INSERT OR REPLACE INTO sus_responses × 10 rows
+        → INSERT OR REPLACE INTO demographics (age_group, degree_job, netflix_experience)
+        → UPDATE users SET sus_done = 1
+    → {done: true} → completion screen shown
+```
+
 ---
 
-## 7. How to Run
+## 8. How to Run
 
 ### Prerequisites
 
@@ -752,18 +948,35 @@ App available at: `http://localhost:5173`
 ### User flow
 
 1. Open `http://localhost:5173`
-2. Register a new account
-3. Rate at least a few movies (the more, the better the profile)
+2. Register a new account (version O or N is randomly assigned)
+3. Rate at least a few movies on the Rate Movies page
 4. Click "Build My Profile →"
-5. View your AI-inferred genre affinities
-6. Optionally: toggle "Edit Profile" and drag sliders to manually adjust
+5. View your AI-inferred genre affinities on the Profile page
+6. Optionally toggle "Edit Profile" and drag sliders to manually adjust
 7. Click "Get Recommendations →"
-8. Click "Why?" on any recommendation to see the XAI explanation
-9. Use the override panel to boost or suppress genres and observe how recommendations shift
+
+**If Version O (Transparent):**
+8. See version badge and guidance explaining the transparent condition
+9. Click "Edit Preferences ▼" on any recommendation card
+10. Review why it was recommended (genre contribution chart + text)
+11. Adjust genre weights using −−/−/○/+/++ buttons
+12. Click "Apply & Refresh Recommendations"
+13. "Continue to Survey →" becomes active
+
+**If Version N (Standard):**
+8. See version badge and guidance explaining the standard condition
+9. Review the recommendations list
+10. Click "Continue to Survey →" (always enabled)
+
+**Both versions:**
+11. Answer 3 demographic questions (age, degree/job, Netflix experience)
+12. Answer 10 SUS questions
+13. Click "Submit Survey"
+14. See "Thank You!" completion screen
 
 ---
 
-## 8. Dependencies Added
+## 9. Dependencies Added
 
 ### Backend — no new packages required
 

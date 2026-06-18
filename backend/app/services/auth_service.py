@@ -1,4 +1,5 @@
 import hashlib
+import random
 import secrets
 
 from fastapi import HTTPException
@@ -23,15 +24,16 @@ def _verify(password: str, stored: str) -> bool:
 async def register(username: str, password: str) -> dict:
     if await db.fetchone("SELECT id FROM users WHERE username = ?", (username,)):
         raise HTTPException(status_code=400, detail="Username already taken")
+    version = random.choice(["O", "N"])
     uid = await db.execute(
-        "INSERT INTO users (username, hashed_password) VALUES (?, ?)",
-        (username, _hash(password)),
+        "INSERT INTO users (username, hashed_password, version) VALUES (?, ?, ?)",
+        (username, _hash(password), version),
     )
-    return {"id": uid, "username": username}
+    return {"id": uid, "username": username, "version": version}
 
 
 async def login(username: str, password: str) -> dict:
     user = await db.fetchone("SELECT * FROM users WHERE username = ?", (username,))
     if not user or not _verify(password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    return {"id": user["id"], "username": user["username"]}
+    return {"id": user["id"], "username": user["username"], "version": user["version"]}

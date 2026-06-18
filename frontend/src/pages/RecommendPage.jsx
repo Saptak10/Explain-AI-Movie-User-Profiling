@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { aiApi } from '../services/api'
+import { useAuth } from '../context/AuthContext'
 
 const LEVELS = [
   { label: '−−', value: 'stark dämpfen',     title: 'Strong suppress' },
@@ -9,6 +10,24 @@ const LEVELS = [
   { label: '+',  value: 'leicht verstärken', title: 'Slight boost' },
   { label: '++', value: 'stark verstärken',  title: 'Strong boost' },
 ]
+
+const VERSION_INFO = {
+  O: {
+    label: 'Version O — Transparent AI',
+    badgeClass: 'version-o',
+    description:
+      'You are in the Transparent AI condition. You can see why each movie was recommended ' +
+      'and adjust the genre weights that drive your recommendations. ' +
+      'Please edit at least one movie\'s preferences before continuing to the survey.',
+  },
+  N: {
+    label: 'Version N — Standard AI',
+    badgeClass: 'version-n',
+    description:
+      'You are in the Standard AI condition. You receive AI-generated recommendations ' +
+      'without explanations. Simply review the list and continue to the survey when ready.',
+  },
+}
 
 function ScoreBar({ score }) {
   return (
@@ -70,7 +89,7 @@ function EditPanel({ explainData, overrides, applying, onOverrideChange, onApply
 }
 
 function RecCard({ rank, rec, expanded, explainData, overrides, applying,
-                   onToggle, onOverrideChange, onApply }) {
+                   onToggle, onOverrideChange, onApply, showEdit }) {
   return (
     <div className={`rec-card-full${expanded ? ' expanded' : ''}`}>
       <div className="rec-card-header">
@@ -79,12 +98,14 @@ function RecCard({ rank, rec, expanded, explainData, overrides, applying,
           <div className="rec-title">{rec.title}</div>
           <ScoreBar score={rec.score} />
         </div>
-        <button className="btn-edit-prefs" onClick={onToggle}>
-          {expanded ? 'Close ▲' : 'Edit Preferences ▼'}
-        </button>
+        {showEdit && (
+          <button className="btn-edit-prefs" onClick={onToggle}>
+            {expanded ? 'Close ▲' : 'Edit Preferences ▼'}
+          </button>
+        )}
       </div>
 
-      {expanded && (
+      {showEdit && expanded && (
         <EditPanel
           explainData={explainData}
           overrides={overrides}
@@ -100,6 +121,10 @@ function RecCard({ rank, rec, expanded, explainData, overrides, applying,
 export default function RecommendPage() {
   const location = useLocation()
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const version = user?.version || 'O'
+  const isTransparent = version === 'O'
+  const info = VERSION_INFO[version] || VERSION_INFO['O']
 
   const [recs, setRecs]                     = useState(location.state?.recommendations || [])
   const [loading, setLoading]               = useState(!location.state?.recommendations)
@@ -159,28 +184,34 @@ export default function RecommendPage() {
     }
   }
 
+  const canContinue = isTransparent ? hasEdited : true
+
   return (
     <div className="page">
       <div className="page-header">
         <div>
           <h1>Your Recommendations</h1>
-          <p className="text-muted">
-            Review your recommendations and adjust your genre preferences
-          </p>
+          <div className="version-header-row">
+            <span className={`version-badge ${info.badgeClass}`}>{info.label}</span>
+          </div>
         </div>
         <div className="page-header-actions">
           <button
             className="btn-primary"
             onClick={() => navigate('/sus')}
-            disabled={!hasEdited}
-            title={!hasEdited ? 'Edit at least one movie\'s preferences first' : undefined}
+            disabled={!canContinue}
+            title={!canContinue ? 'Edit at least one movie\'s preferences first' : undefined}
           >
             Continue to Survey →
           </button>
         </div>
       </div>
 
-      {!hasEdited && (
+      <div className="version-guidance-banner">
+        <p>{info.description}</p>
+      </div>
+
+      {isTransparent && !hasEdited && (
         <div className="info-banner">
           <strong>Task:</strong> For at least one recommendation below, click{' '}
           <em>Edit Preferences</em> to see why it was recommended and adjust the genre weights.
@@ -203,6 +234,7 @@ export default function RecommendPage() {
               explainData={explainCache[r.movie_id]}
               overrides={movieOverrides[r.movie_id] || {}}
               applying={applyingFor === r.movie_id}
+              showEdit={isTransparent}
               onToggle={() => handleToggle(r.movie_id)}
               onOverrideChange={(genre, level) => handleOverrideChange(r.movie_id, genre, level)}
               onApply={() => handleApply(r.movie_id)}

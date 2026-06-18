@@ -56,17 +56,32 @@ def init_db(path: str) -> None:
             username         TEXT UNIQUE NOT NULL,
             hashed_password  TEXT NOT NULL,
             has_edited       INTEGER NOT NULL DEFAULT 0,
-            sus_done         INTEGER NOT NULL DEFAULT 0
+            sus_done         INTEGER NOT NULL DEFAULT 0,
+            version          TEXT    NOT NULL DEFAULT 'O'
         )
     """)
     for col, defn in [
         ("has_edited", "INTEGER NOT NULL DEFAULT 0"),
         ("sus_done",   "INTEGER NOT NULL DEFAULT 0"),
+        ("version",    "TEXT NOT NULL DEFAULT 'O'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {defn}")
         except sqlite3.OperationalError:
             pass
+
+    # ── Demographics ──────────────────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS demographics (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             INTEGER NOT NULL,
+            age_group           TEXT,
+            degree_job          TEXT,
+            netflix_experience  INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            UNIQUE(user_id)
+        )
+    """)
 
     # ── Ratings — no version column ────────────────────────────────────────
     rating_cols = {r[1] for r in conn.execute("PRAGMA table_info(ratings)").fetchall()}

@@ -7,8 +7,8 @@ export function AuthProvider({ children }) {
     try { return JSON.parse(localStorage.getItem('user')) } catch { return null }
   })
 
-  const login = (token, user_id, username) => {
-    const u = { id: user_id, username }
+  const login = (token, user_id, username, version) => {
+    const u = { id: user_id, username, version }
     localStorage.setItem('token', token)
     localStorage.setItem('user', JSON.stringify(u))
     setUser(u)

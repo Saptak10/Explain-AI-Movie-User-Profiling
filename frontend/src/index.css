@@ -482,6 +482,19 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
 .version-o { background: #dcfce7; color: #166534; }
 .version-n { background: #f1f5f9; color: #475569; }
 
+/* ── Version guidance banner ──────────────────────────────────────────────── */
+.version-guidance-banner {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: var(--radius);
+  padding: .85rem 1.1rem;
+  font-size: .875rem;
+  color: var(--text);
+  line-height: 1.55;
+  margin-bottom: 1.25rem;
+}
+
 /* ── Full-width rec list (replaces two-column layout) ─────────────────────── */
 .rec-list-full { display: flex; flex-direction: column; gap: .75rem; }
 
@@ -634,6 +647,87 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
   margin-top: 1.5rem;
   padding-top: 1rem;
   border-top: 1px solid var(--border);
+}
+
+/* ── Demographic section (inside SUS card) ────────────────────────────────── */
+.demo-section { margin-bottom: 0; }
+.demo-section-title {
+  font-size: .8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-muted);
+  margin-bottom: 1.25rem;
+}
+.demo-question { margin-bottom: 1.25rem; }
+.demo-q-text {
+  font-size: .9rem;
+  line-height: 1.5;
+  margin-bottom: .6rem;
+  color: var(--text);
+}
+.required-star { color: #dc2626; }
+
+.demo-radio-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+.demo-radio-label {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  padding: .4rem .85rem;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: .875rem;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s;
+  user-select: none;
+}
+.demo-radio-label input[type="radio"] { display: none; }
+.demo-radio-label.selected {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+  font-weight: 600;
+}
+.demo-radio-btn {
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: border-color .15s, background .15s;
+}
+.demo-radio-label.selected .demo-radio-btn {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+
+.demo-text-input {
+  width: 100%;
+  max-width: 480px;
+  padding: .6rem .85rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: .9rem;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--card);
+  transition: border-color .15s, box-shadow .15s;
+  outline: none;
+}
+.demo-text-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(79,70,229,.15);
+}
+
+.demo-likert { flex-wrap: nowrap; }
+
+.demo-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 1.5rem 0;
 }
 
 /* ── SUS complete screen ──────────────────────────────────────────────────── */

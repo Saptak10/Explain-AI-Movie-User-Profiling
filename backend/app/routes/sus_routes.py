@@ -32,6 +32,11 @@ async def submit_sus(req: SUSRequest, user_id: int = Depends(get_current_user)):
             "INSERT OR REPLACE INTO sus_responses (user_id, question_idx, response) VALUES (?, ?, ?)",
             (user_id, idx, response),
         )
+    await db.execute(
+        "INSERT OR REPLACE INTO demographics (user_id, age_group, degree_job, netflix_experience) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, req.age_group, req.degree_job, req.netflix_experience),
+    )
     await db.execute("UPDATE users SET sus_done = 1 WHERE id = ?", (user_id,))
     return {"done": True}
 

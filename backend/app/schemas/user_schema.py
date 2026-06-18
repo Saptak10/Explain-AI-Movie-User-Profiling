@@ -10,3 +10,4 @@ class TokenResponse(BaseModel):
     token: str
     user_id: int
     username: str
+    version: str
