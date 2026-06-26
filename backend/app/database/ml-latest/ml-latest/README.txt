@@ -1,11 +1,11 @@
 Summary
 =======
 
-This dataset (ml-latest-small) describes 5-star rating and free-text tagging activity from [MovieLens](http://movielens.org), a movie recommendation service. It contains 100836 ratings and 3683 tag applications across 9742 movies. These data were created by 610 users between March 29, 1996 and September 24, 2018. This dataset was generated on September 26, 2018.
+This dataset (ml-latest) describes 5-star rating and free-text tagging activity from [MovieLens](http://movielens.org), a movie recommendation service. It contains 33832162 ratings and 2328315 tag applications across 86537 movies. These data were created by 330975 users between January 09, 1995 and July 20, 2023. This dataset was generated on July 20, 2023.
 
-Users were selected at random for inclusion. All selected users had rated at least 20 movies. No demographic information is included. Each user is represented by an id, and no other information is provided.
+Users were selected at random for inclusion. All selected users had rated at least 1 movies. No demographic information is included. Each user is represented by an id, and no other information is provided.
 
-The data are contained in the files `links.csv`, `movies.csv`, `ratings.csv` and `tags.csv`. More details about the contents and use of all these files follows.
+The data are contained in the files `genome-scores.csv`, `genome-tags.csv`, `links.csv`, `movies.csv`, `ratings.csv` and `tags.csv`. More details about the contents and use of all these files follows.
 
 This is a *development* dataset. As such, it may change over time and is not an appropriate dataset for shared research results. See available *benchmark* datasets if that is your intent.
 
@@ -145,6 +145,32 @@ imdbId is an identifier for movies used by <http://www.imdb.com>. E.g., the movi
 tmdbId is an identifier for movies used by <https://www.themoviedb.org>. E.g., the movie Toy Story has the link <https://www.themoviedb.org/movie/862>.
 
 Use of the resources listed above is subject to the terms of each provider.
+
+
+Tag Genome (genome-scores.csv and genome-tags.csv)
+-------------------------------------------------
+
+This data set includes a current copy of the Tag Genome.
+
+[genome-paper]: http://files.grouplens.org/papers/tag_genome.pdf
+
+The tag genome is a data structure that contains tag relevance scores for movies.  The structure is a dense matrix: each movie in the genome has a value for *every* tag in the genome.
+
+As described in [this article][genome-paper], the tag genome encodes how strongly movies exhibit particular properties represented by tags (atmospheric, thought-provoking, realistic, etc.). The tag genome was computed using a machine learning algorithm on user-contributed content including tags, ratings, and textual reviews.
+
+The genome is split into two files.  The file `genome-scores.csv` contains movie-tag relevance data in the following format:
+
+    movieId,tagId,relevance
+
+The second file, `genome-tags.csv`, provides the tag descriptions for the tag IDs in the genome file, in the following format:
+
+    tagId,tag
+
+The `tagId` values are generated when the data set is exported, so they may vary from version to version of the MovieLens data sets.
+
+Please include the following citation if referencing tag genome data:
+
+> Jesse Vig, Shilad Sen, and John Riedl. 2012. The Tag Genome: Encoding Community Knowledge to Support Novel Interaction. ACM Trans. Interact. Intell. Syst. 2, 3: 13:1–13:44. <https://doi.org/10.1145/2362394.2362395>
 
 
 Cross-Validation

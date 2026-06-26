@@ -26,12 +26,16 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     db.init_db(settings.db_path)
-    ai_service.setup(settings.model_save_path)
+    ai_service.setup(
+        settings.model_save_path,
+        settings.movies_csv_path,
+        settings.ratings_csv_path,
+    )
     if os.path.exists(settings.model_save_path):
         print("Loading saved model…")
         await asyncio.to_thread(ai_service.load)
     else:
-        print("First run — training model (~1-2 min)…")
+        print("First run — training model (this may take a while on the full ml-latest dataset)…")
         await asyncio.to_thread(ai_service.train_and_save)
 
 
