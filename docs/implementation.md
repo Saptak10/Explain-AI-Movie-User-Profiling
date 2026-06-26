@@ -4,9 +4,10 @@ This document describes every file that was created or modified to wire the AI l
 a running full-stack application with user authentication, movie ratings, a profile page,
 and an explainable recommendations page.
 
-> **Last updated: 2026-06-17**
+> **Last updated: 2026-06-26**
 > Includes: A/B version assignment (Version O / Version N), per-movie XAI editing,
-> SUS questionnaire with demographic pre-questions, and the complete data flow.
+> SUS questionnaire with demographic pre-questions, streaming ML pipeline, new HCAI
+> model architecture, and movie-level XAI explanations.
 
 ---
 
@@ -15,7 +16,8 @@ and an explainable recommendations page.
 1. [Architecture Overview](#1-architecture-overview)
 2. [Tech Stack Decisions](#2-tech-stack-decisions)
 3. [Experiment Design — Version O vs Version N](#3-experiment-design--version-o-vs-version-n)
-4. [Backend — File-by-File](#4-backend--file-by-file)
+4. [AI Layer — Streaming Pipeline & New Modules](#4-ai-layer--streaming-pipeline--new-modules)
+5. [Backend — File-by-File](#5-backend--file-by-file)
    - [main.py (modified)](#mainpy-modified)
    - [config/config.py](#configconfigpy)
    - [database/db.py](#databasedbpy)
@@ -150,7 +152,87 @@ The research hypothesis is that users exposed to transparent, editable AI recomm
 
 ---
 
-## 4. Backend — File-by-File
+## 4. AI Layer — Streaming Pipeline & New Modules
+
+Commit `59308c3` ("Add streaming ML pipeline, HCAI model, XAI") by the teammate replaced the original `app/ai/ai.py` monolith with five focused modules. The previous implementation loaded the entire ratings matrix into RAM as a dense NumPy array (610 users × 9742 movies for ml-latest-small). The new implementation streams ml-latest (~33 M rows, ~330 k users) without ever materialising the full matrix.
+
+### Why the rewrite was needed
+
+The full ml-latest dataset has ~87 k movies and ~330 k users. A dense `(num_users, num_movies)` float32 matrix would require ~330 k × 87 k × 4 bytes ≈ **115 GB of RAM** — far beyond any reasonable machine. The new pipeline caps peak RAM at `O(batch_size × num_movies)` by streaming `ratings.csv` line-by-line and yielding one user vector at a time via a PyTorch `IterableDataset`.
+
+### New modules (`backend/app/ai/`)
+
+#### `data_pipeline.py`
+Streaming data pipeline over `ratings.csv`.
+
+Key classes:
+- `RatingsStreamReader` — decodes each CSV row, translates `movieId` to dense index
+- `UserAggregator` — buffers one user's rows; flushes a complete user vector when the userId changes. Requires (and validates) that `ratings.csv` is sorted by `userId` ascending — as the official MovieLens export always is.
+- `SparseUserVectorDataset` — PyTorch `IterableDataset`; turns each flushed user into a `(input_vector, target_vector, hidden_mask)` triple for masked autoencoder training
+
+#### `id_mapping.py`
+`IdMapping` dataclass that owns the bidirectional movie ID translation and genre vocabulary. Built once from `movies.csv` by `build_id_mapping()`, then saved into the checkpoint so subsequent loads don't re-scan the file.
+
+Key responsibilities:
+- `movie_id_to_idx` / `idx_to_movie_id` — translate between real MovieLens IDs (non-contiguous, e.g. 193609) and dense 0-based indices
+- `genres` list — dynamically discovered from `movies.csv` (not hardcoded)
+- `genre_mask` — `(num_movies, num_genres)` binary prior-knowledge matrix used for weight clipping
+
+#### `model.py`
+`DualModeHCAIAutoEncoder` — the genre-bottleneck autoencoder, refactored to accept an `IdMapping` for dynamic sizing.
+
+Two named forward passes replace the old implicit `user_overrides` branch:
+- `forward_standard(x)` → `(predictions, latent_profile)` — standard encoder → bottleneck → decoder pass
+- `forward_interactive(genre_override_vec)` → `predictions` — skips the encoder entirely; uses the provided genre weight vector directly as the bottleneck, then decodes to recommendation scores
+
+Additional helpers:
+- `extract_taste_profile(latent, genres)` → `{genre: float}` dict for the `/api/profile` endpoint
+- `clip_encoder_weights()` — called after each training step to anchor encoder weights near the genre prior
+
+#### `losses.py`
+- `masked_mse_loss(pred, target, mask)` — only penalises positions where the user has actually rated, preventing the model from overfitting to structural zeros
+- `train_step(model, optimizer, input, target, mask, lambda_reg, epsilon_clip)` — one mini-batch update: forward, masked MSE + L2 regularisation, backward, weight clipping
+
+#### `xai.py`
+Three Human-Centered XAI utilities:
+
+| Function | Purpose |
+|---|---|
+| `hydrate_sparse_input(ratings, id_mapping)` | Converts sparse `{movieId: rating}` API payload → dense `(1, num_movies)` tensor. The only place a dense input vector is constructed per request. |
+| `compute_local_feature_importance(model, vec, target_idx)` | Permutation-importance restricted to the user's *non-zero* ratings only. Zeroing already-zero entries changes nothing; scanning all 87 k movies at inference time would cause API timeouts. Returns `{dense_idx: importance_float}` for the user's actual watch history. |
+| `generate_soft_rationale(vec, latent_profile, target_movie_idx, id_mapping, genre_mask_row)` | Cross-references user's top-rated movies, dominant bottleneck genre nodes, and the target movie's genre membership to produce a natural-language rationale string. |
+
+### What changed in the public AI service API
+
+| Method | Old signature | New signature |
+|---|---|---|
+| `setup()` | `(model_save_path)` | `(model_save_path, movies_csv_path, ratings_csv_path)` |
+| `genres` | constant list from `ai.py` | property on `AIService` (from `id_mapping.genres`) |
+| `get_recommendations()` | `(ratings, top_n, overrides, alpha)` | `(ratings, top_n)` — no overrides |
+| `get_recommendations_from_profile()` | `(edited_dict, ratings, top_n)` — 0–1 float values, old format | `(genre_overrides, ratings, top_n)` — `{genre_name: float}` genre weight dict, passed directly to `forward_interactive` |
+| `explain_movie()` | `(movie_idx, ratings, method)` — returned `{contributions, text}` | `(movie_id, ratings)` — returns `{movie_id, title, rationale, feature_importance}` where `feature_importance` is movie-level, not genre-level |
+
+### Frontend impact
+
+Because `get_recommendations()` no longer accepts overrides, both the Profile page and Recommendation page override systems now convert the user's 5-button selections (−−/−/○/+/++) to float genre weights and call `POST /api/recommend/edited-profile` instead of `POST /api/recommend`:
+
+```
+User presses −− on Drama (AI profile: 0.85)
+  → delta = −0.5
+  → genre_weight["Drama"] = max(0, min(1, 0.85 − 0.5)) = 0.35
+  → POST /api/recommend/edited-profile { genre_weights: {"Drama": 0.35, ...} }
+  → ai_service.get_recommendations_from_profile({"Drama": 0.35, ...})
+  → model.forward_interactive(override_vec)
+  → updated recommendation list
+```
+
+The explanation panel in the Recommendation page now shows:
+1. **`rationale`** — the natural-language reason string from `generate_soft_rationale()`
+2. **`feature_importance`** — top-5 movies from the user's history that most influenced this recommendation (with importance bars), from `compute_local_feature_importance()`
+
+---
+
+## 5. Backend — File-by-File
 
 ### `main.py` (modified)
 

@@ -304,15 +304,12 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
 .genre-list { display: flex; flex-direction: column; gap: .6rem; }
 .genre-row  { display: flex; align-items: center; gap: .75rem; }
 .genre-name { width: 110px; font-size: .875rem; font-weight: 500; flex-shrink: 0; }
-.bar-track  { flex: 1; height: 10px; background: var(--bg); border-radius: 5px; overflow: hidden; }
-.bar-fill   { height: 100%; background: var(--bar-grad); border-radius: 5px; transition: width .4s ease; }
+.bar-track  { flex: 1; height: 10px; background: var(--bg); border-radius: 5px; overflow: hidden; min-width: 40px; }
+.bar-fill          { height: 100%; background: var(--bar-grad); border-radius: 5px; transition: width .4s ease, background .2s ease; }
+.bar-fill-boost    { height: 100%; background: linear-gradient(90deg, #22c55e, #16a34a); border-radius: 5px; transition: width .4s ease; }
+.bar-fill-suppress { height: 100%; background: linear-gradient(90deg, #f87171, #dc2626); border-radius: 5px; transition: width .4s ease; }
 .genre-pct  { width: 38px; text-align: right; font-size: .8rem; color: var(--text-muted); flex-shrink: 0; }
-.genre-slider {
-  flex: 1;
-  min-width: 0;
-  accent-color: var(--primary);
-  cursor: pointer;
-}
+.genre-row-edit { flex-wrap: wrap; }
 
 /* ── Recommendations layout ───────────────────────────────────────────────── */
 .recommend-layout {

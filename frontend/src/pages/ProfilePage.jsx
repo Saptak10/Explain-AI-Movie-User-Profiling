@@ -8,66 +8,95 @@ const GENRES = [
   "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western",
 ]
 
-function GenreRow({ genre, value, editable, onChange }) {
-  const pct = Math.round(value * 100)
+const LEVELS = [
+  { label: '−−', value: 'stark dämpfen',     delta: -0.5 },
+  { label: '−',  value: 'leicht dämpfen',    delta: -0.25 },
+  { label: '○',  value: 'neutral',            delta:  0 },
+  { label: '+',  value: 'leicht verstärken', delta: +0.25 },
+  { label: '++', value: 'stark verstärken',  delta: +0.5 },
+]
+
+function GenreRow({ genre, value, editable, override, onOverrideChange }) {
+  const level   = LEVELS.find(l => l.value === (override || 'neutral')) || LEVELS[2]
+  const adjusted = editable
+    ? Math.max(0, Math.min(1, value + level.delta))
+    : value
+  const pct     = Math.round(adjusted * 100)
+  const barClass = editable && level.delta > 0
+    ? 'bar-fill bar-fill-boost'
+    : editable && level.delta < 0
+      ? 'bar-fill bar-fill-suppress'
+      : 'bar-fill'
+
   return (
-    <div className="genre-row">
+    <div className={`genre-row${editable ? ' genre-row-edit' : ''}`}>
       <span className="genre-name">{genre}</span>
-      {editable ? (
-        <input
-          type="range"
-          min={0}
-          max={100}
-          value={pct}
-          onChange={e => onChange(Number(e.target.value) / 100)}
-          className="genre-slider"
-        />
-      ) : (
-        <div className="bar-track">
-          <div className="bar-fill" style={{ width: `${pct}%` }} />
+      <div className="bar-track">
+        <div className={barClass} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="genre-pct">{pct}%</span>
+      {editable && (
+        <div className="override-btns">
+          {LEVELS.map(lvl => (
+            <button
+              key={lvl.value}
+              className={`override-btn${(override || 'neutral') === lvl.value ? ' active' : ''}`}
+              onClick={() => onOverrideChange(genre, lvl.value)}
+            >
+              {lvl.label}
+            </button>
+          ))}
         </div>
       )}
-      <span className="genre-pct">{pct}%</span>
     </div>
   )
 }
 
 export default function ProfilePage() {
-  const [profile, setProfile] = useState(null)
-  const [edited, setEdited] = useState(null)
-  const [editMode, setEditMode] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [profile, setProfile]     = useState(null)
+  const [overrides, setOverrides] = useState({})
+  const [editMode, setEditMode]   = useState(false)
+  const [loading, setLoading]     = useState(true)
   const [recLoading, setRecLoading] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
     aiApi.getProfile()
-      .then(({ data }) => {
-        setProfile(data.profile)
-        setEdited({ ...data.profile })
-      })
+      .then(({ data }) => setProfile(data.profile))
       .finally(() => setLoading(false))
   }, [])
 
-  // Sort order is fixed to the AI profile — never re-sorted while editing,
-  // so dragging a slider doesn't cause genres to jump around.
+  // Sort order fixed to AI profile — never changes while editing
   const sortedGenres = useMemo(() => {
     if (!profile) return GENRES
     return GENRES.slice().sort((a, b) => (profile[b] || 0) - (profile[a] || 0))
   }, [profile])
 
-  const handleChange = (genre, val) => {
-    setEdited(prev => ({ ...prev, [genre]: val }))
+  const handleOverrideChange = (genre, level) =>
+    setOverrides(prev => ({ ...prev, [genre]: level }))
+
+  const activeOverrides = Object.fromEntries(
+    Object.entries(overrides).filter(([, v]) => v && v !== 'neutral')
+  )
+  const activeCount = Object.keys(activeOverrides).length
+
+  const toggleEditMode = () => {
+    setEditMode(m => !m)
+    setOverrides({})
   }
 
   const goRecommend = async () => {
     setRecLoading(true)
     try {
-      if (editMode) {
-        const { data } = await aiApi.recommendFromProfile(edited)
-        navigate('/recommend', {
-          state: { recommendations: data.recommendations, fromEdited: true },
-        })
+      if (editMode && activeCount > 0) {
+        // Build float genre_weights from AI profile + LEVELS delta
+        const genre_weights = {}
+        for (const genre of sortedGenres) {
+          const level = LEVELS.find(l => l.value === (overrides[genre] || 'neutral')) || LEVELS[2]
+          genre_weights[genre] = Math.max(0, Math.min(1, (profile[genre] || 0) + level.delta))
+        }
+        const { data } = await aiApi.recommendFromProfile(genre_weights)
+        navigate('/recommend', { state: { recommendations: data.recommendations } })
       } else {
         navigate('/recommend')
       }
@@ -78,7 +107,6 @@ export default function ProfilePage() {
 
   if (loading) return <div className="loading">Analysing your taste…</div>
 
-  const display = editMode ? edited : profile
   const topGenre = sortedGenres[0]
 
   return (
@@ -96,35 +124,42 @@ export default function ProfilePage() {
         <div className="page-header-actions">
           <button
             className={`btn-secondary${editMode ? ' active' : ''}`}
-            onClick={() => setEditMode(m => !m)}
+            onClick={toggleEditMode}
           >
             {editMode ? '← AI Profile' : '✏ Edit Profile'}
           </button>
           <button className="btn-primary" onClick={goRecommend} disabled={recLoading}>
-            {recLoading ? 'Loading…' : 'Get Recommendations →'}
+            {recLoading
+              ? 'Loading…'
+              : editMode && activeCount > 0
+                ? `Get Recommendations (${activeCount} override${activeCount > 1 ? 's' : ''}) →`
+                : 'Get Recommendations →'}
           </button>
         </div>
       </div>
 
       {editMode && (
         <div className="info-banner">
-          <strong>Edit Mode:</strong> Drag sliders to set your genre affinities manually.
-          Clicking <em>Get Recommendations</em> will use this edited profile instead of the AI profile.
+          <strong>Edit Mode:</strong> Use the buttons to boost (+ / ++) or suppress (− / −−) any genre.
+          The bars show your AI-inferred affinities. Click <em>Get Recommendations</em> to apply your adjustments.
         </div>
       )}
 
       <div className="profile-card">
         <div className="profile-section-title">
-          {editMode ? 'Manual Genre Profile' : 'AI-Inferred Genre Profile'}
+          {editMode
+            ? `Manual Genre Overrides${activeCount > 0 ? ` — ${activeCount} active` : ' — none active yet'}`
+            : 'AI-Inferred Genre Profile'}
         </div>
         <div className="genre-list">
           {sortedGenres.map(genre => (
             <GenreRow
               key={genre}
               genre={genre}
-              value={display[genre] || 0}
+              value={profile[genre] || 0}
               editable={editMode}
-              onChange={val => handleChange(genre, val)}
+              override={overrides[genre]}
+              onOverrideChange={handleOverrideChange}
             />
           ))}
         </div>
