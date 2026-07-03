@@ -4,7 +4,7 @@ This document describes every file that was created or modified to wire the AI l
 a running full-stack application with user authentication, movie ratings, a profile page,
 and an explainable recommendations page.
 
-> **Last updated: 2026-07-01**
+> **Last updated: 2026-07-03**
 > Includes: A/B version assignment (Version O / Version N), counterbalanced 2-round
 > experiment flow, per-movie and profile-level XAI editing, data logging for weight
 > changes per round, SUS questionnaire with demographic pre-questions, streaming ML
@@ -177,6 +177,7 @@ SUS questionnaire (10 questions + 3 demographic questions)
 |---|---|
 | `ratings` | Every movie rating, tagged with `round` (0=initial, 1=after round-1 recs, 2=after round-2 recs) |
 | `profile_edits` | Every genre weight change applied: `round`, `edit_type` ('movie'/'profile'), `genre`, `level` (e.g. 'leicht verstärken'), `movie_id` (null for profile edits), `created_at` |
+| `recommendation_sessions` | Every recommendation set shown to the user: `round`, `rec_type` ('initial'/'edited'), `movie_id`, `position`, `score`, `created_at`. Lets the research team reconstruct exactly what each user saw and how it changed after each weight edit. |
 | `sus_responses` | SUS answers (10 questions × user) |
 | `demographics` | Age group, degree/job, Netflix experience |
 | `users` | `version`, `edit_order`, `has_edited` |
@@ -359,6 +360,18 @@ CREATE TABLE profile_edits (
     genre      TEXT    NOT NULL,            -- e.g. 'Action'
     level      TEXT    NOT NULL,            -- e.g. 'leicht verstärken'
     movie_id   INTEGER,                     -- set for edit_type='movie', NULL for 'profile'
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE recommendation_sessions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    round      INTEGER NOT NULL,            -- 1 or 2
+    rec_type   TEXT    NOT NULL,            -- 'initial' | 'edited'
+    movie_id   INTEGER NOT NULL,
+    position   INTEGER NOT NULL,            -- 1-indexed rank in the list
+    score      REAL    NOT NULL,            -- AI relevance score (0–5)
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
@@ -933,6 +946,7 @@ All endpoints below require `Authorization: Bearer <token>`.
 | GET | `/importance` | — | `{importance: {genre: float}}` |
 | POST | `/user/mark-edited` | — | `{status: "ok"}` |
 | POST | `/profile-edits` | `{round, edit_type, genre, level, movie_id?}` | `{status: "ok"}` |
+| POST | `/recommendation-log` | `{round, rec_type, movies: [{movie_id, position, score}]}` | `{status: "ok"}` |
 
 ### SUS — `/api/sus`
 

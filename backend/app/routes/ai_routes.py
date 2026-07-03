@@ -8,6 +8,7 @@ from app.schemas.ai_schema import (
     GenreOverrideInput,
     ProfileEditLogRequest,
     RatingRequest,
+    RecommendLogRequest,
     RecommendRequest,
 )
 from app.services.ai_service import ai_service
@@ -93,4 +94,15 @@ async def log_profile_edit(req: ProfileEditLogRequest, user_id: int = Depends(ge
         "VALUES (?, ?, ?, ?, ?, ?)",
         (user_id, req.round, req.edit_type, req.genre, req.level, req.movie_id),
     )
+    return {"status": "ok"}
+
+
+@router.post("/recommendation-log")
+async def log_recommendations(req: RecommendLogRequest, user_id: int = Depends(get_current_user)):
+    for item in req.movies:
+        await db.execute(
+            "INSERT INTO recommendation_sessions "
+            "(user_id, round, rec_type, movie_id, position, score) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, req.round, req.rec_type, item.movie_id, item.position, item.score),
+        )
     return {"status": "ok"}

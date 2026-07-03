@@ -19,6 +19,18 @@ class ProfileEditLogRequest(BaseModel):
     movie_id: Optional[int] = None
 
 
+class RecommendLogItem(BaseModel):
+    movie_id: int
+    position: int
+    score: float
+
+
+class RecommendLogRequest(BaseModel):
+    round: int
+    rec_type: str  # "initial" | "edited"
+    movies: list[RecommendLogItem]
+
+
 class UserRatingsInput(BaseModel):
     """
     Sparse mapping of movieId (string or int key on the wire; Pydantic

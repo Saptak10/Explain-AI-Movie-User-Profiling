@@ -140,6 +140,23 @@ def init_db(path: str) -> None:
         )
     """)
 
+    # ── Recommendation sessions — what movies were shown, when, and in what
+    # order so the research team can reconstruct each user's recommendation
+    # experience per round and per edit type ──────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS recommendation_sessions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            round      INTEGER NOT NULL,
+            rec_type   TEXT    NOT NULL,
+            movie_id   INTEGER NOT NULL,
+            position   INTEGER NOT NULL,
+            score      REAL    NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
     # ── SUS responses — no version column ─────────────────────────────────
     sus_cols = {r[1] for r in conn.execute("PRAGMA table_info(sus_responses)").fetchall()}
     if "version" in sus_cols:

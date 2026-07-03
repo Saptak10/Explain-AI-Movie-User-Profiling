@@ -232,10 +232,19 @@ export default function RecommendPage() {
 
   const editType = round === 1 ? firstType : secondType
 
+  const fireLogRecs = (newRecs, currentRound, recType) => {
+    aiApi.logRecommendations(
+      currentRound,
+      recType,
+      newRecs.map((r, i) => ({ movie_id: r.movie_id, position: i + 1, score: r.score }))
+    ).catch(() => {})
+  }
+
   const loadRecs = async () => {
     try {
       const { data } = await aiApi.recommend(10)
       setRecs(data.recommendations)
+      fireLogRecs(data.recommendations, round, 'initial')
     } finally {
       setLoading(false)
     }
@@ -308,6 +317,7 @@ export default function RecommendPage() {
         ? await aiApi.recommendFromProfile(genre_weights)
         : await aiApi.recommend(10)
       setRecs(data.recommendations)
+      fireLogRecs(data.recommendations, round, 'edited')
       if (changed.length > 0) {
         await logEdits('movie', changed, movieId)
         setRoundEdited(true)
@@ -335,6 +345,7 @@ export default function RecommendPage() {
         ? await aiApi.recommendFromProfile(genre_weights)
         : await aiApi.recommend(10)
       setRecs(data.recommendations)
+      fireLogRecs(data.recommendations, round, 'edited')
       if (changed.length > 0) {
         await logEdits('profile', changed)
         setRoundEdited(true)
@@ -345,10 +356,18 @@ export default function RecommendPage() {
     }
   }
 
-  const hasRatedAny = Object.keys(recRatings).length > 0
-  const canAdvance  = isTransparent ? (roundEdited && hasRatedAny) : true
+  // Gate: every currently displayed recommendation must be rated.
+  // After Apply refreshes the list, any newly shown movies reset this gate —
+  // intentional: the user should react to what they actually see each time.
+  const hasRatedAll = recs.length > 0 && recs.every(r => recRatings[r.movie_id] > 0)
+  const ratedCount  = recs.filter(r => recRatings[r.movie_id] > 0).length
+
+  // O: need all rated + at least one edit applied  N: just need all rated
+  const canAdvance = isTransparent ? (roundEdited && hasRatedAll) : hasRatedAll
 
   const goNextRound = () => {
+    // Log round-2 starting recs (carried over from round-1 Apply)
+    fireLogRecs(recs, 2, 'initial')
     setRound(2)
     setRoundEdited(false)
     setRecRatings({})
@@ -366,11 +385,14 @@ export default function RecommendPage() {
     }
   }
 
-  const taskText = editType === 'movie'
-    ? 'Rate at least one recommendation below. Then click "Edit Preferences" on at least one of them, ' +
-      'adjust the genre weights to see why it was recommended, and click Apply & Refresh.'
-    : 'Rate at least one recommendation below. Then use the "Adjust your overall taste profile" panel ' +
-      'to change your genre weights and click Apply & Refresh.'
+  const unratedCount = recs.length - ratedCount
+  const taskText = isTransparent
+    ? editType === 'movie'
+      ? `Rate all ${recs.length} recommendations below. Then click "Edit Preferences" on at least one, ` +
+        'adjust the genre weights, and click Apply & Refresh.'
+      : `Rate all ${recs.length} recommendations below. Then use the profile panel above to ` +
+        'adjust your genre weights and click Apply & Refresh.'
+    : `Please rate all ${recs.length} recommendations below before continuing to the survey.`
 
   return (
     <div className="page">
@@ -387,7 +409,13 @@ export default function RecommendPage() {
             className="btn-primary"
             onClick={handlePrimaryAction}
             disabled={!canAdvance}
-            title={!canAdvance ? 'Rate at least one recommendation and apply an edit first' : undefined}
+            title={
+              !canAdvance
+                ? unratedCount > 0
+                  ? `Rate ${unratedCount} more recommendation${unratedCount > 1 ? 's' : ''} first`
+                  : 'Apply at least one genre weight change first'
+                : undefined
+            }
           >
             {isTransparent && round === 1 ? 'Next Round →' : 'Continue to Survey →'}
           </button>
@@ -398,9 +426,12 @@ export default function RecommendPage() {
         <p>{info.description}</p>
       </div>
 
-      {isTransparent && !canAdvance && (
+      {!canAdvance && (
         <div className="info-banner">
           <strong>Task:</strong> {taskText}
+          {unratedCount > 0 && (
+            <> — <strong>{ratedCount}/{recs.length} rated</strong></>
+          )}
         </div>
       )}
 

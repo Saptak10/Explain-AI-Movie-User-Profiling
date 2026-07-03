@@ -31,6 +31,8 @@ export const aiApi = {
   markEdited:           ()                               => client.post('/api/user/mark-edited'),
   logProfileEdit:       (round, edit_type, genre, level, movie_id = null) =>
                           client.post('/api/profile-edits', { round, edit_type, genre, level, movie_id }),
+  logRecommendations:   (round, rec_type, movies) =>
+                          client.post('/api/recommendation-log', { round, rec_type, movies }),
 }
 
 export const susApi = {

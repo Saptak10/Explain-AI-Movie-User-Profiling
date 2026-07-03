@@ -23,6 +23,7 @@ export default function RatingsPage() {
   }, [])
 
   const MAX_RATINGS = 10
+  const MIN_RATINGS = 5
 
   const ratedCount = Object.values(ratings).filter(r => r > 0).length
 
@@ -64,7 +65,8 @@ export default function RatingsPage() {
           <button
             className="btn-primary"
             onClick={handleSave}
-            disabled={ratedCount === 0 || saving}
+            disabled={ratedCount < MIN_RATINGS || saving}
+            title={ratedCount < MIN_RATINGS ? `Rate at least ${MIN_RATINGS} movies to continue` : undefined}
           >
             {saving ? 'Saving…' : 'Build My Profile →'}
           </button>
@@ -94,8 +96,15 @@ export default function RatingsPage() {
 
       {ratedCount > 0 && (
         <div className="sticky-cta">
-          <span className="text-muted">{ratedCount}/{MAX_RATINGS} movies rated</span>
-          <button className="btn-primary" onClick={handleSave} disabled={saving}>
+          <span className="text-muted">
+            {ratedCount}/{MAX_RATINGS} rated
+            {ratedCount < MIN_RATINGS && ` — rate ${MIN_RATINGS - ratedCount} more to continue`}
+          </span>
+          <button
+            className="btn-primary"
+            onClick={handleSave}
+            disabled={ratedCount < MIN_RATINGS || saving}
+          >
             {saving ? 'Saving…' : 'Build My Profile →'}
           </button>
         </div>
