@@ -4,10 +4,11 @@ This document describes every file that was created or modified to wire the AI l
 a running full-stack application with user authentication, movie ratings, a profile page,
 and an explainable recommendations page.
 
-> **Last updated: 2026-06-26**
-> Includes: A/B version assignment (Version O / Version N), per-movie XAI editing,
-> SUS questionnaire with demographic pre-questions, streaming ML pipeline, new HCAI
-> model architecture, and movie-level XAI explanations.
+> **Last updated: 2026-07-01**
+> Includes: A/B version assignment (Version O / Version N), counterbalanced 2-round
+> experiment flow, per-movie and profile-level XAI editing, data logging for weight
+> changes per round, SUS questionnaire with demographic pre-questions, streaming ML
+> pipeline, new HCAI model architecture, and movie-level XAI explanations.
 
 ---
 
@@ -111,44 +112,80 @@ and an explainable recommendations page.
 
 The system implements a **between-subjects A/B experiment** to compare transparent versus opaque AI recommendations.
 
-### Assignment
+### Assignment — two layers of randomisation
 
-When a user registers, `auth_service.register()` calls `random.choice(["O", "N"])` and stores the result in the `users.version` column. The assigned version is returned in the JWT login response and stored in `localStorage` via `AuthContext`. Every page reload re-reads the version from `localStorage`, so the assignment is permanent for the lifetime of the account.
+When a user registers, `auth_service.register()` performs two random assignments:
 
-### Version O — Transparent AI
+1. **Version** (`users.version`): `random.choice(["O", "N"])` — which condition the user is in.
+2. **Edit order** (`users.edit_order`): for Version O only, `random.choice(["movie_first", "profile_first"])` — which editing type the user encounters first in their two-round flow. Version N users get `edit_order = NULL`.
+
+Both values are returned in the JWT login/register response and stored in `localStorage` via `AuthContext` (as `user.version` and `user.edit_order`). Assignments are permanent for the lifetime of the account.
+
+### Version O — Transparent AI (2-Round Flow)
 
 | Property | Detail |
 |---|---|
-| Badge | Green pill: **Version O — Transparent AI** |
-| Guidance text | "You are in the Transparent AI condition. You can see why each movie was recommended and adjust the genre weights that drive your recommendations." |
-| Edit Preferences button | **Shown** on every recommendation card |
-| XAI explanation | Loaded on expand: genre contributions from the encoder weights × user profile |
-| Gate before survey | **Yes** — "Continue to Survey" is disabled until the user has clicked Apply at least once. This is enforced both in the UI (`hasEdited` state) and in the database (`users.has_edited = 1` via `POST /api/user/mark-edited`). |
+| Badge | Green pill: **Version O — Transparent AI** + **Round X of 2** |
+| Guidance text | Condition description shown in a left-bordered banner |
+| Task instruction | Info banner describes what the user must do this round |
+| Edit types | Per-movie weight editing (via "Edit Preferences ▼" card panel) and whole-profile editing (via a genre-slider panel at the top of the page) |
+| Counterbalance | `edit_order = 'movie_first'` → round 1 uses per-movie editing, round 2 uses profile editing; `edit_order = 'profile_first'` → reversed. Eliminates order effects in analysis. |
+| Gate per round | **Yes** — both `roundEdited` (edit applied) AND `hasRatedAny` (at least 1 recommended movie rated) must be true. |
+| Round 1 button | "Next Round →" — resets edit/rating state and flips edit type; does NOT fetch new recs (the new recs are already shown after the last Apply click). |
+| Round 2 button | "Continue to Survey →" — navigates to `/sus`. |
 
-**What the user does in Version O:**
-1. Reviews recommendations
-2. Expands a card → sees why the movie was recommended (genre contribution bar chart + natural-language summary)
-3. Adjusts genre weights using the 5-level override buttons (−−, −, ○, +, ++)
-4. Clicks "Apply & Refresh Recommendations" → list updates immediately
-5. After at least one Apply, "Continue to Survey" becomes active
+**Full user flow (Version O):**
+
+```
+Register (assigned version=O, edit_order=movie_first or profile_first)
+  ↓
+Rate up to 10 movies from the popular list (round=0 tagged in DB)
+  ↓
+View AI profile → Get Recommendations (round 1)
+  ↓
+Round 1 — rated_in_round=1 + edit type A (per assignment)
+  • Rate at least one recommended movie (StarRating on each card, saved with round=1)
+  • Apply at least one genre weight change using the assigned edit type
+  • "Next Round →" unlocks
+  ↓
+Round 2 — rated_in_round=2 + edit type B (the other type)
+  • Rate at least one recommended movie (saved with round=2)
+  • Apply at least one genre weight change using the other edit type
+  • "Continue to Survey →" unlocks
+  ↓
+SUS questionnaire (10 questions + 3 demographic questions)
+```
 
 ### Version N — Standard AI
 
 | Property | Detail |
 |---|---|
 | Badge | Grey pill: **Version N — Standard AI** |
-| Guidance text | "You are in the Standard AI condition. You receive AI-generated recommendations without explanations. Simply review the list and continue to the survey when ready." |
-| Edit Preferences button | **Hidden** — recommendation cards show only title + score bar |
-| XAI explanation | Not available |
-| Gate before survey | **None** — "Continue to Survey" is always enabled |
+| Guidance text | "You are in the Standard AI condition..." |
+| Edit Preferences button | **Hidden** |
+| Rating on rec cards | Shown (data collected), but not gated |
+| Gate before survey | **None** — "Continue to Survey" always enabled |
 
 **What the user does in Version N:**
-1. Reviews the recommendation list
-2. Clicks "Continue to Survey" directly
+1. Rates up to 10 movies
+2. Views recommendations (with star ratings available on cards for data collection)
+3. Clicks "Continue to Survey" directly
+
+### Data recorded per user (linkable via `user_id`)
+
+| Table | What it stores |
+|---|---|
+| `ratings` | Every movie rating, tagged with `round` (0=initial, 1=after round-1 recs, 2=after round-2 recs) |
+| `profile_edits` | Every genre weight change applied: `round`, `edit_type` ('movie'/'profile'), `genre`, `level` (e.g. 'leicht verstärken'), `movie_id` (null for profile edits), `created_at` |
+| `sus_responses` | SUS answers (10 questions × user) |
+| `demographics` | Age group, degree/job, Netflix experience |
+| `users` | `version`, `edit_order`, `has_edited` |
+
+All tables share the `user_id` foreign key, so any user's complete interaction trace can be reconstructed with a simple join.
 
 ### Why this design
 
-The research hypothesis is that users exposed to transparent, editable AI recommendations (Version O) will report higher system usability (SUS score) and better understanding of recommendations than users in the black-box condition (Version N). The SUS questionnaire and demographic questions are identical for both groups.
+The research hypothesis is that users exposed to transparent, editable AI recommendations (Version O) will report higher system usability (SUS score) and better understanding of recommendations than users in the black-box condition (Version N). The counterbalanced edit order within Version O allows the analysis to separate the effect of editing type from the effect of editing order.
 
 ---
 
@@ -300,16 +337,30 @@ CREATE TABLE users (
     hashed_password  TEXT NOT NULL,
     has_edited       INTEGER NOT NULL DEFAULT 0,  -- 1 after first Apply in Version O
     sus_done         INTEGER NOT NULL DEFAULT 0,  -- 1 after SUS submission
-    version          TEXT    NOT NULL DEFAULT 'O' -- 'O' (Transparent) or 'N' (Standard)
+    version          TEXT    NOT NULL DEFAULT 'O', -- 'O' (Transparent) or 'N' (Standard)
+    edit_order       TEXT                          -- 'movie_first' | 'profile_first' | NULL (N users)
 );
 
 CREATE TABLE ratings (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id   INTEGER NOT NULL,
-    movie_id  INTEGER NOT NULL,   -- dense model index (0..9741)
-    rating    REAL NOT NULL,
+    movie_id  INTEGER NOT NULL,
+    rating    REAL    NOT NULL,
+    round     INTEGER NOT NULL DEFAULT 0, -- 0=initial ratings, 1=round-1 recs, 2=round-2 recs
     FOREIGN KEY (user_id) REFERENCES users(id),
-    UNIQUE(user_id, movie_id)     -- re-rating a movie replaces the old value
+    UNIQUE(user_id, movie_id)  -- re-rating replaces old value (round also updated)
+);
+
+CREATE TABLE profile_edits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    round      INTEGER NOT NULL,            -- 1 or 2
+    edit_type  TEXT    NOT NULL,            -- 'movie' | 'profile'
+    genre      TEXT    NOT NULL,            -- e.g. 'Action'
+    level      TEXT    NOT NULL,            -- e.g. 'leicht verstärken'
+    movie_id   INTEGER,                     -- set for edit_type='movie', NULL for 'profile'
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE sus_responses (
@@ -350,9 +401,9 @@ The `init_db()` function also handles **schema migration** for existing database
 Two Pydantic models for the auth API:
 
 - `AuthRequest` — request body for both register and login: `{username: str, password: str}`
-- `TokenResponse` — what the server returns: `{token: str, user_id: int, username: str, version: str}`
+- `TokenResponse` — what the server returns: `{token: str, user_id: int, username: str, version: str, edit_order: str | None}`
 
-The `version` field (`"O"` or `"N"`) is assigned at registration and returned on every login so the frontend always knows which condition the user is in.
+The `version` field (`"O"` or `"N"`) is assigned at registration and returned on every login. `edit_order` (`"movie_first"`, `"profile_first"`, or `null` for Version N) controls the round-1 / round-2 editing sequence in the frontend.
 
 ---
 
@@ -388,6 +439,14 @@ Four Pydantic models for the AI endpoints:
 class RatingRequest:
     movie_id: int    # dense model index shown in the UI
     rating:   float  # 1.0–5.0
+    round:    int    # 0=initial, 1=round-1 recs, 2=round-2 recs (default 0)
+
+class ProfileEditLogRequest:
+    round:     int          # 1 or 2
+    edit_type: str          # 'movie' | 'profile'
+    genre:     str          # e.g. 'Action'
+    level:     str          # e.g. 'leicht verstärken'
+    movie_id:  int | None   # set for movie edits, null for profile edits
 
 class RecommendRequest:
     top_n:     int  = 10
@@ -849,8 +908,8 @@ Each question uses circular radio buttons (1–5). Answered questions have their
 
 | Method | Path | Auth | Request body | Response |
 |---|---|---|---|---|
-| POST | `/register` | None | `{username, password}` | `{token, user_id, username, version}` |
-| POST | `/login` | None | `{username, password}` | `{token, user_id, username, version}` |
+| POST | `/register` | None | `{username, password}` | `{token, user_id, username, version, edit_order}` |
+| POST | `/login` | None | `{username, password}` | `{token, user_id, username, version, edit_order}` |
 
 ### Movies — `/api/movies`
 
@@ -864,15 +923,16 @@ All endpoints below require `Authorization: Bearer <token>`.
 
 | Method | Path | Request body | Response |
 |---|---|---|---|
-| GET | `/genres` | — | `{genres: [string × 18]}` |
-| POST | `/ratings` | `{movie_id: int, rating: float}` | `{status: "ok"}` |
+| GET | `/genres` | — | `{genres: [string]}` |
+| POST | `/ratings` | `{movie_id: int, rating: float, round: int}` | `{status: "ok"}` |
 | GET | `/ratings` | — | `{ratings: {movie_id: rating}}` |
 | GET | `/profile` | — | `{profile: {genre: float 0–1}}` |
-| POST | `/recommend` | `{top_n, overrides?, alpha}` | `{recommendations: [{movie_id, title, score}]}` |
-| POST | `/recommend/edited-profile` | `{profile: dict, top_n}` | `{recommendations: [...]}` |
-| POST | `/explain` | `{movie_id: int, method: "soft"\|"lime"}` | `{method, text?, contributions: [{genre, value}]}` |
+| POST | `/recommend` | `{top_n: int}` | `{recommendations: [{movie_id, title, score}]}` |
+| POST | `/recommend/edited-profile` | `{genre_weights: {genre: float}, top_n: int}` | `{recommendations: [...]}` |
+| POST | `/explain` | `{movie_id: int}` | `{movie_id, title, rationale: str, feature_importance: [{movie_id, title, importance}]}` |
 | GET | `/importance` | — | `{importance: {genre: float}}` |
 | POST | `/user/mark-edited` | — | `{status: "ok"}` |
+| POST | `/profile-edits` | `{round, edit_type, genre, level, movie_id?}` | `{status: "ok"}` |
 
 ### SUS — `/api/sus`
 

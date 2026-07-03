@@ -6,6 +6,17 @@ from pydantic import BaseModel, Field
 class RatingRequest(BaseModel):
     movie_id: int
     rating: float
+    # 0 = initial rating phase, 1 = after round-1 recommendations,
+    # 2 = after round-2 recommendations. See profile_edits / ratings.round.
+    round: int = 0
+
+
+class ProfileEditLogRequest(BaseModel):
+    round: int
+    edit_type: str  # "movie" | "profile"
+    genre: str
+    level: str
+    movie_id: Optional[int] = None
 
 
 class UserRatingsInput(BaseModel):

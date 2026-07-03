@@ -22,8 +22,16 @@ export default function RatingsPage() {
       .finally(() => setLoading(false))
   }, [])
 
+  const MAX_RATINGS = 10
+
+  const ratedCount = Object.values(ratings).filter(r => r > 0).length
+
   const handleRate = (movieId, star) => {
-    setRatings(prev => ({ ...prev, [movieId]: star }))
+    setRatings(prev => {
+      const alreadyRated = (prev[movieId] || 0) > 0
+      if (!alreadyRated && ratedCount >= MAX_RATINGS) return prev
+      return { ...prev, [movieId]: star }
+    })
   }
 
   const handleSave = async () => {
@@ -32,15 +40,13 @@ export default function RatingsPage() {
       ([id, r]) => r > 0 && savedRatings[id] !== r
     )
     try {
-      await Promise.all(changed.map(([id, r]) => aiApi.submitRating(Number(id), r)))
+      await Promise.all(changed.map(([id, r]) => aiApi.submitRating(Number(id), r, 0)))
       setSavedRatings({ ...ratings })
       navigate('/profile')
     } finally {
       setSaving(false)
     }
   }
-
-  const ratedCount = Object.values(ratings).filter(r => r > 0).length
 
   if (loading) return <div className="loading">Loading movies…</div>
 
@@ -54,7 +60,7 @@ export default function RatingsPage() {
           </p>
         </div>
         <div className="page-header-actions">
-          <span className="badge">{ratedCount} rated</span>
+          <span className="badge">{ratedCount}/{MAX_RATINGS} rated</span>
           <button
             className="btn-primary"
             onClick={handleSave}
@@ -66,20 +72,29 @@ export default function RatingsPage() {
       </div>
 
       <div className="movie-grid">
-        {movies.map(m => (
-          <div key={m.id} className={`movie-card${ratings[m.id] > 0 ? ' rated' : ''}`}>
-            <div className="movie-title">{m.title}</div>
-            <StarRating
-              value={ratings[m.id] || 0}
-              onChange={star => handleRate(m.id, star)}
-            />
-          </div>
-        ))}
+        {movies.map(m => {
+          const isRated = ratings[m.id] > 0
+          const limitReached = !isRated && ratedCount >= MAX_RATINGS
+          return (
+            <div
+              key={m.id}
+              className={`movie-card${isRated ? ' rated' : ''}${limitReached ? ' disabled' : ''}`}
+              title={limitReached ? `Limit reached — you can rate up to ${MAX_RATINGS} movies` : undefined}
+            >
+              <div className="movie-title">{m.title}</div>
+              <StarRating
+                value={ratings[m.id] || 0}
+                onChange={star => handleRate(m.id, star)}
+                disabled={limitReached}
+              />
+            </div>
+          )
+        })}
       </div>
 
       {ratedCount > 0 && (
         <div className="sticky-cta">
-          <span className="text-muted">{ratedCount} movie{ratedCount > 1 ? 's' : ''} rated</span>
+          <span className="text-muted">{ratedCount}/{MAX_RATINGS} movies rated</span>
           <button className="btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? 'Saving…' : 'Build My Profile →'}
           </button>

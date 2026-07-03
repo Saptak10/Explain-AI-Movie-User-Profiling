@@ -19,7 +19,7 @@ export default function LoginPage() {
     try {
       const fn = tab === 'login' ? authApi.login : authApi.register
       const { data } = await fn(username, password)
-      login(data.token, data.user_id, data.username, data.version)
+      login(data.token, data.user_id, data.username, data.version, data.edit_order)
       navigate('/rate')
     } catch (err) {
       setError(err.response?.data?.detail || 'Something went wrong')

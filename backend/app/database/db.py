@@ -57,13 +57,15 @@ def init_db(path: str) -> None:
             hashed_password  TEXT NOT NULL,
             has_edited       INTEGER NOT NULL DEFAULT 0,
             sus_done         INTEGER NOT NULL DEFAULT 0,
-            version          TEXT    NOT NULL DEFAULT 'O'
+            version          TEXT    NOT NULL DEFAULT 'O',
+            edit_order       TEXT
         )
     """)
     for col, defn in [
         ("has_edited", "INTEGER NOT NULL DEFAULT 0"),
         ("sus_done",   "INTEGER NOT NULL DEFAULT 0"),
         ("version",    "TEXT NOT NULL DEFAULT 'O'"),
+        ("edit_order", "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {defn}")
@@ -113,6 +115,30 @@ def init_db(path: str) -> None:
                 UNIQUE(user_id, movie_id)
             )
         """)
+    # round: 0 = initial rating phase, 1 = after first recommendation round,
+    # 2 = after second recommendation round. Tracks *when* a rating was last
+    # given so ratings of recommended movies can be linked to the experiment step.
+    try:
+        conn.execute("ALTER TABLE ratings ADD COLUMN round INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    # ── Profile edits — log of every weight change a user makes, so it can
+    # be linked back to the user, the round, and whether it was a per-movie
+    # or whole-profile edit ────────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS profile_edits (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            round      INTEGER NOT NULL,
+            edit_type  TEXT    NOT NULL,
+            genre      TEXT    NOT NULL,
+            level      TEXT    NOT NULL,
+            movie_id   INTEGER,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
 
     # ── SUS responses — no version column ─────────────────────────────────
     sus_cols = {r[1] for r in conn.execute("PRAGMA table_info(sus_responses)").fetchall()}

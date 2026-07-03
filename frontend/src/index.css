@@ -246,6 +246,7 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
 }
 .movie-card:hover { box-shadow: var(--shadow-md); }
 .movie-card.rated { border-color: var(--primary); background: var(--primary-light); }
+.movie-card.disabled { opacity: .45; pointer-events: none; }
 .movie-title {
   font-size: .875rem;
   font-weight: 600;
@@ -268,6 +269,8 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
 .star:hover, .star.filled { color: var(--star); }
 .star:hover { transform: scale(1.15); }
 .star-label { font-size: .75rem; color: var(--text-muted); margin-left: .3rem; }
+.stars.disabled .star { cursor: not-allowed; }
+.stars.disabled .star:hover { transform: none; }
 
 /* ── Sticky CTA ───────────────────────────────────────────────────────────── */
 .sticky-cta {
@@ -479,6 +482,16 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
 .version-o { background: #dcfce7; color: #166534; }
 .version-n { background: #f1f5f9; color: #475569; }
 
+/* ── Round badge ───────────────────────────────────────────────────────────── */
+.round-badge {
+  padding: .2rem .7rem;
+  border-radius: 20px;
+  font-size: .8rem;
+  font-weight: 700;
+  background: var(--primary-light);
+  color: var(--primary);
+}
+
 /* ── Version guidance banner ──────────────────────────────────────────────── */
 .version-guidance-banner {
   background: var(--card);
@@ -511,6 +524,31 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
   align-items: center;
   gap: 1rem;
   padding: 1rem 1.1rem;
+}
+
+/* ── Rate-this-recommendation row ─────────────────────────────────────────── */
+.rec-card-rate {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: 0 1.1rem 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: .75rem;
+}
+.rec-card-rate-label { font-size: .8rem; color: var(--text-muted); font-weight: 500; }
+
+/* ── Standalone profile-edit panel (round driven by edit_order) ──────────── */
+.profile-edit-panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: .85rem;
+  margin-bottom: 1.25rem;
 }
 
 /* ── Edit-preferences button ──────────────────────────────────────────────── */

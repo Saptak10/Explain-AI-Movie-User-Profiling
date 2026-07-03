@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { aiApi } from '../services/api'
 import { useAuth } from '../context/AuthContext'
+import StarRating from '../components/StarRating'
 
 const LEVELS = [
   { label: '−−', value: 'stark dämpfen',     delta: -0.5 },
@@ -17,8 +18,7 @@ const VERSION_INFO = {
     badgeClass: 'version-o',
     description:
       'You are in the Transparent AI condition. You can see why each movie was recommended ' +
-      'and adjust the genre weights that drive your recommendations. ' +
-      "Please edit at least one movie's preferences before continuing to the survey.",
+      'and adjust the genre weights that drive your recommendations.',
   },
   N: {
     label: 'Version N — Standard AI',
@@ -45,6 +45,38 @@ function ImportanceBar({ value, max }) {
   return (
     <div className="mini-bar-track">
       <div className="mini-bar-fill" style={{ width: `${pct}%` }} />
+    </div>
+  )
+}
+
+function GenreOverrideRow({ genre, value, level, onOverrideChange }) {
+  const lvl = LEVELS.find(l => l.value === (level || 'neutral')) || LEVELS[2]
+  const adjusted = Math.max(0, Math.min(1, value + lvl.delta))
+  const pct = Math.round(adjusted * 100)
+  const barClass = lvl.delta > 0
+    ? 'bar-fill bar-fill-boost'
+    : lvl.delta < 0
+      ? 'bar-fill bar-fill-suppress'
+      : 'bar-fill'
+
+  return (
+    <div className="genre-row genre-row-edit">
+      <span className="genre-name">{genre}</span>
+      <div className="bar-track">
+        <div className={barClass} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="genre-pct">{pct}%</span>
+      <div className="override-btns">
+        {LEVELS.map(l => (
+          <button
+            key={l.value}
+            className={`override-btn${(level || 'neutral') === l.value ? ' active' : ''}`}
+            onClick={() => onOverrideChange(genre, l.value)}
+          >
+            {l.label}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -85,26 +117,16 @@ function EditPanel({ explainData, genreProfile, overrides, applying, onOverrideC
 
       {topGenres.length > 0 && (
         <>
-          <p className="edit-panel-label">Adjust genre preferences:</p>
+          <p className="edit-panel-label">Adjust genre preferences for this movie:</p>
           <div className="edit-genre-list">
-            {topGenres.map(([genre]) => (
-              <div key={genre} className="edit-genre-row">
-                <div className="edit-genre-info">
-                  <span className="edit-genre-name">{genre}</span>
-                </div>
-                <div className="override-btns">
-                  {LEVELS.map(lvl => (
-                    <button
-                      key={lvl.value}
-                      className={`override-btn${(overrides[genre] || 'neutral') === lvl.value ? ' active' : ''}`}
-                      onClick={() => onOverrideChange(genre, lvl.value)}
-                      title={lvl.value}
-                    >
-                      {lvl.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            {topGenres.map(([genre, value]) => (
+              <GenreOverrideRow
+                key={genre}
+                genre={genre}
+                value={value}
+                level={overrides[genre]}
+                onOverrideChange={onOverrideChange}
+              />
             ))}
           </div>
         </>
@@ -117,8 +139,34 @@ function EditPanel({ explainData, genreProfile, overrides, applying, onOverrideC
   )
 }
 
+function ProfileEditPanel({ genreProfile, overrides, applying, onOverrideChange, onApply }) {
+  const topGenres = Object.entries(genreProfile || {})
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 6)
+
+  return (
+    <div className="profile-edit-panel">
+      <p className="edit-panel-label">Adjust your overall taste profile:</p>
+      <div className="edit-genre-list">
+        {topGenres.map(([genre, value]) => (
+          <GenreOverrideRow
+            key={genre}
+            genre={genre}
+            value={value}
+            level={overrides[genre]}
+            onOverrideChange={onOverrideChange}
+          />
+        ))}
+      </div>
+      <button className="btn-primary" onClick={onApply} disabled={applying}>
+        {applying ? 'Updating recommendations…' : 'Apply & Refresh Recommendations'}
+      </button>
+    </div>
+  )
+}
+
 function RecCard({ rank, rec, expanded, explainData, genreProfile, overrides, applying,
-                   onToggle, onOverrideChange, onApply, showEdit }) {
+                   onToggle, onOverrideChange, onApply, showEdit, rating, onRate }) {
   return (
     <div className={`rec-card-full${expanded ? ' expanded' : ''}`}>
       <div className="rec-card-header">
@@ -132,6 +180,11 @@ function RecCard({ rank, rec, expanded, explainData, genreProfile, overrides, ap
             {expanded ? 'Close ▲' : 'Edit Preferences ▼'}
           </button>
         )}
+      </div>
+
+      <div className="rec-card-rate">
+        <span className="rec-card-rate-label">Rate this recommendation:</span>
+        <StarRating value={rating || 0} onChange={onRate} />
       </div>
 
       {showEdit && expanded && (
@@ -156,25 +209,30 @@ export default function RecommendPage() {
   const isTransparent = version === 'O'
   const info        = VERSION_INFO[version] || VERSION_INFO['O']
 
-  const [recs, setRecs]                     = useState(location.state?.recommendations || [])
-  const [loading, setLoading]               = useState(!location.state?.recommendations)
-  const [expandedId, setExpandedId]         = useState(null)
-  const [explainCache, setExplainCache]     = useState({})
-  const [movieOverrides, setMovieOverrides] = useState({})
-  const [applyingFor, setApplyingFor]       = useState(null)
-  const [hasEdited, setHasEdited]           = useState(false)
+  // Counterbalanced edit order assigned at registration (Version O only).
+  // 'movie_first' (default) -> round 1 edits per-movie weights, round 2 edits the whole profile.
+  // 'profile_first'         -> round 1 edits the whole profile, round 2 edits per-movie weights.
+  const editOrder  = user?.edit_order || 'movie_first'
+  const firstType  = editOrder === 'profile_first' ? 'profile' : 'movie'
+  const secondType = firstType === 'movie' ? 'profile' : 'movie'
 
-  // Genre profile kept in a ref — used by Apply to build genre_weights
-  const genreProfileRef = useRef({})
+  const [round, setRound]                       = useState(location.state?.round || 1)
+  const [recs, setRecs]                         = useState(location.state?.recommendations || [])
+  const [loading, setLoading]                   = useState(!location.state?.recommendations)
+  const [expandedId, setExpandedId]             = useState(null)
+  const [explainCache, setExplainCache]         = useState({})
+  const [movieOverrides, setMovieOverrides]     = useState({})
+  const [profileOverrides, setProfileOverrides] = useState({})
+  const [applyingFor, setApplyingFor]           = useState(null)
+  const [applyingProfile, setApplyingProfile]   = useState(false)
+  const [hasEdited, setHasEdited]               = useState(false) // ever edited (drives /user/mark-edited)
+  const [roundEdited, setRoundEdited]           = useState(false) // edited during the current round
+  const [recRatings, setRecRatings]             = useState({})
+  const [genreProfile, setGenreProfile]         = useState({})
 
-  useEffect(() => {
-    if (!location.state?.recommendations) loadRecs()
-    // Load genre profile once for the override Apply logic
-    aiApi.getProfile().then(({ data }) => { genreProfileRef.current = data.profile })
-  }, [])
+  const editType = round === 1 ? firstType : secondType
 
   const loadRecs = async () => {
-    setLoading(true)
     try {
       const { data } = await aiApi.recommend(10)
       setRecs(data.recommendations)
@@ -182,6 +240,12 @@ export default function RecommendPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!location.state?.recommendations) loadRecs()
+    aiApi.getProfile().then(({ data }) => setGenreProfile(data.profile))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleToggle = async (movieId) => {
     if (expandedId === movieId) { setExpandedId(null); return }
@@ -203,33 +267,110 @@ export default function RecommendPage() {
     }))
   }
 
+  const handleProfileOverrideChange = (genre, level) =>
+    setProfileOverrides(prev => ({ ...prev, [genre]: level }))
+
+  const handleRateRec = async (movieId, star) => {
+    setRecRatings(prev => ({ ...prev, [movieId]: star }))
+    await aiApi.submitRating(movieId, star, round)
+  }
+
+  const logEdits = (edit_type, changedEntries, movieId = null) =>
+    Promise.all(
+      changedEntries.map(([genre, level]) =>
+        aiApi.logProfileEdit(round, edit_type, genre, level, movieId)
+      )
+    )
+
+  const markEditedOnce = async () => {
+    if (!hasEdited) {
+      setHasEdited(true)
+      await aiApi.markEdited()
+    }
+  }
+
   const handleApply = async (movieId) => {
     const overrides = movieOverrides[movieId] || {}
-    const baseProfile = genreProfileRef.current
+    const baseProfile = genreProfile
 
-    // Convert LEVELS button selections → float genre_weights
     const genre_weights = {}
+    const changed = []
     for (const [genre, level] of Object.entries(overrides)) {
+      if (level === 'neutral') continue
       const lvl = LEVELS.find(l => l.value === level) || LEVELS[2]
       genre_weights[genre] = Math.max(0, Math.min(1, (baseProfile[genre] || 0) + lvl.delta))
+      changed.push([genre, level])
     }
 
     setApplyingFor(movieId)
     try {
-      const { data } = Object.keys(genre_weights).length
+      const { data } = changed.length
         ? await aiApi.recommendFromProfile(genre_weights)
         : await aiApi.recommend(10)
       setRecs(data.recommendations)
-      if (!hasEdited) {
-        setHasEdited(true)
-        await aiApi.markEdited()
+      if (changed.length > 0) {
+        await logEdits('movie', changed, movieId)
+        setRoundEdited(true)
       }
+      await markEditedOnce()
     } finally {
       setApplyingFor(null)
     }
   }
 
-  const canContinue = isTransparent ? hasEdited : true
+  const handleApplyProfile = async () => {
+    const baseProfile = genreProfile
+    const genre_weights = {}
+    const changed = []
+    for (const [genre, level] of Object.entries(profileOverrides)) {
+      if (level === 'neutral') continue
+      const lvl = LEVELS.find(l => l.value === level) || LEVELS[2]
+      genre_weights[genre] = Math.max(0, Math.min(1, (baseProfile[genre] || 0) + lvl.delta))
+      changed.push([genre, level])
+    }
+
+    setApplyingProfile(true)
+    try {
+      const { data } = changed.length
+        ? await aiApi.recommendFromProfile(genre_weights)
+        : await aiApi.recommend(10)
+      setRecs(data.recommendations)
+      if (changed.length > 0) {
+        await logEdits('profile', changed)
+        setRoundEdited(true)
+      }
+      await markEditedOnce()
+    } finally {
+      setApplyingProfile(false)
+    }
+  }
+
+  const hasRatedAny = Object.keys(recRatings).length > 0
+  const canAdvance  = isTransparent ? (roundEdited && hasRatedAny) : true
+
+  const goNextRound = () => {
+    setRound(2)
+    setRoundEdited(false)
+    setRecRatings({})
+    setMovieOverrides({})
+    setProfileOverrides({})
+    setExpandedId(null)
+    setExplainCache({})
+  }
+
+  const handlePrimaryAction = () => {
+    if (isTransparent && round === 1) {
+      goNextRound()
+    } else {
+      navigate('/sus')
+    }
+  }
+
+  const taskText = editType === 'movie'
+    ? 'Rate at least one recommendation below. Then click "Edit Preferences" on at least one of them, ' +
+      'adjust the genre weights to see why it was recommended, and click Apply & Refresh.'
+    : 'Rate at least one recommendation below. Then use the "Adjust your overall taste profile" panel ' +
+      'to change your genre weights and click Apply & Refresh.'
 
   return (
     <div className="page">
@@ -238,16 +379,17 @@ export default function RecommendPage() {
           <h1>Your Recommendations</h1>
           <div className="version-header-row">
             <span className={`version-badge ${info.badgeClass}`}>{info.label}</span>
+            {isTransparent && <span className="round-badge">Round {round} of 2</span>}
           </div>
         </div>
         <div className="page-header-actions">
           <button
             className="btn-primary"
-            onClick={() => navigate('/sus')}
-            disabled={!canContinue}
-            title={!canContinue ? "Edit at least one movie's preferences first" : undefined}
+            onClick={handlePrimaryAction}
+            disabled={!canAdvance}
+            title={!canAdvance ? 'Rate at least one recommendation and apply an edit first' : undefined}
           >
-            Continue to Survey →
+            {isTransparent && round === 1 ? 'Next Round →' : 'Continue to Survey →'}
           </button>
         </div>
       </div>
@@ -256,11 +398,9 @@ export default function RecommendPage() {
         <p>{info.description}</p>
       </div>
 
-      {isTransparent && !hasEdited && (
+      {isTransparent && !canAdvance && (
         <div className="info-banner">
-          <strong>Task:</strong> For at least one recommendation below, click{' '}
-          <em>Edit Preferences</em> to see why it was recommended and adjust the genre weights.
-          Then click <em>Apply &amp; Refresh</em> before continuing to the survey.
+          <strong>Task:</strong> {taskText}
         </div>
       )}
 
@@ -269,24 +409,38 @@ export default function RecommendPage() {
       ) : recs.length === 0 ? (
         <div className="empty-state">No recommendations yet — rate some movies first.</div>
       ) : (
-        <div className="rec-list-full">
-          {recs.map((r, i) => (
-            <RecCard
-              key={r.movie_id}
-              rank={i + 1}
-              rec={r}
-              expanded={expandedId === r.movie_id}
-              explainData={explainCache[r.movie_id]}
-              genreProfile={genreProfileRef.current}
-              overrides={movieOverrides[r.movie_id] || {}}
-              applying={applyingFor === r.movie_id}
-              showEdit={isTransparent}
-              onToggle={() => handleToggle(r.movie_id)}
-              onOverrideChange={(genre, level) => handleOverrideChange(r.movie_id, genre, level)}
-              onApply={() => handleApply(r.movie_id)}
+        <>
+          {isTransparent && editType === 'profile' && (
+            <ProfileEditPanel
+              genreProfile={genreProfile}
+              overrides={profileOverrides}
+              applying={applyingProfile}
+              onOverrideChange={handleProfileOverrideChange}
+              onApply={handleApplyProfile}
             />
-          ))}
-        </div>
+          )}
+
+          <div className="rec-list-full">
+            {recs.map((r, i) => (
+              <RecCard
+                key={r.movie_id}
+                rank={i + 1}
+                rec={r}
+                expanded={expandedId === r.movie_id}
+                explainData={explainCache[r.movie_id]}
+                genreProfile={genreProfile}
+                overrides={movieOverrides[r.movie_id] || {}}
+                applying={applyingFor === r.movie_id}
+                showEdit={isTransparent && editType === 'movie'}
+                rating={recRatings[r.movie_id]}
+                onRate={star => handleRateRec(r.movie_id, star)}
+                onToggle={() => handleToggle(r.movie_id)}
+                onOverrideChange={(genre, level) => handleOverrideChange(r.movie_id, genre, level)}
+                onApply={() => handleApply(r.movie_id)}
+              />
+            ))}
+          </div>
+        </>
       )}
     </div>
   )

@@ -20,7 +20,7 @@ export const moviesApi = {
 }
 
 export const aiApi = {
-  submitRating:         (movie_id, rating)              => client.post('/api/ratings', { movie_id, rating }),
+  submitRating:         (movie_id, rating, round = 0)    => client.post('/api/ratings', { movie_id, rating, round }),
   getRatings:           ()                               => client.get('/api/ratings'),
   getProfile:           ()                               => client.get('/api/profile'),
   recommend:            (top_n = 10)                     => client.post('/api/recommend', { top_n }),
@@ -29,6 +29,8 @@ export const aiApi = {
   explain:              (movie_id)                       => client.post('/api/explain', { movie_id }),
   getImportance:        ()                               => client.get('/api/importance'),
   markEdited:           ()                               => client.post('/api/user/mark-edited'),
+  logProfileEdit:       (round, edit_type, genre, level, movie_id = null) =>
+                          client.post('/api/profile-edits', { round, edit_type, genre, level, movie_id }),
 }
 
 export const susApi = {

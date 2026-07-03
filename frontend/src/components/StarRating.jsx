@@ -1,18 +1,19 @@
 import { useState } from 'react'
 
-export default function StarRating({ value, onChange }) {
+export default function StarRating({ value, onChange, disabled = false }) {
   const [hover, setHover] = useState(0)
   const display = hover || value
 
   return (
-    <div className="stars" onMouseLeave={() => setHover(0)}>
+    <div className={`stars${disabled ? ' disabled' : ''}`} onMouseLeave={() => setHover(0)}>
       {[1, 2, 3, 4, 5].map(s => (
         <button
           key={s}
           type="button"
           className={`star${display >= s ? ' filled' : ''}`}
-          onClick={() => onChange(s)}
-          onMouseEnter={() => setHover(s)}
+          onClick={() => !disabled && onChange(s)}
+          onMouseEnter={() => !disabled && setHover(s)}
+          disabled={disabled}
           title={`${s} star${s > 1 ? 's' : ''}`}
         >
           ★

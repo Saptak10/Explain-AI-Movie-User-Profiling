@@ -6,6 +6,7 @@ from app.database import db
 from app.schemas.ai_schema import (
     ExplainRequest,
     GenreOverrideInput,
+    ProfileEditLogRequest,
     RatingRequest,
     RecommendRequest,
 )
@@ -30,8 +31,8 @@ async def get_genres():
 @router.post("/ratings")
 async def submit_rating(req: RatingRequest, user_id: int = Depends(get_current_user)):
     await db.execute(
-        "INSERT OR REPLACE INTO ratings (user_id, movie_id, rating) VALUES (?, ?, ?)",
-        (user_id, req.movie_id, req.rating),
+        "INSERT OR REPLACE INTO ratings (user_id, movie_id, rating, round) VALUES (?, ?, ?, ?)",
+        (user_id, req.movie_id, req.rating, req.round),
     )
     return {"status": "ok"}
 
@@ -82,4 +83,14 @@ async def importance(_: int = Depends(get_current_user)):
 @router.post("/user/mark-edited")
 async def mark_edited(user_id: int = Depends(get_current_user)):
     await db.execute("UPDATE users SET has_edited = 1 WHERE id = ?", (user_id,))
+    return {"status": "ok"}
+
+
+@router.post("/profile-edits")
+async def log_profile_edit(req: ProfileEditLogRequest, user_id: int = Depends(get_current_user)):
+    await db.execute(
+        "INSERT INTO profile_edits (user_id, round, edit_type, genre, level, movie_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, req.round, req.edit_type, req.genre, req.level, req.movie_id),
+    )
     return {"status": "ok"}
