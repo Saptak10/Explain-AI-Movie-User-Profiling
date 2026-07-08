@@ -1,14 +1,10 @@
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
+
 
 from app.database import db
-from app.schemas.ai_schema import (
-    ExplainRequest,
-    GenreOverrideInput,
-    RatingRequest,
-    RecommendRequest,
-)
+from app.schemas.ai_schema import EditedProfileRequest, ExplainRequest, RatingRequest, RecommendRequest
 from app.services.ai_service import ai_service
 from app.utils.jwt_utils import get_current_user
 
@@ -51,15 +47,17 @@ async def get_profile(user_id: int = Depends(get_current_user)):
 @router.post("/recommend")
 async def recommend(req: RecommendRequest, user_id: int = Depends(get_current_user)):
     ratings = await _get_ratings(user_id)
-    recs = await asyncio.to_thread(ai_service.get_recommendations, ratings, req.top_n)
+    recs = await asyncio.to_thread(
+        ai_service.get_recommendations, ratings, req.top_n
+    )
     return {"recommendations": recs}
 
 
 @router.post("/recommend/edited-profile")
-async def recommend_edited(req: GenreOverrideInput, user_id: int = Depends(get_current_user)):
+async def recommend_edited(req: EditedProfileRequest, user_id: int = Depends(get_current_user)):
     ratings = await _get_ratings(user_id)
     recs = await asyncio.to_thread(
-        ai_service.get_recommendations_from_profile, req.genre_weights, ratings, req.top_n
+        ai_service.get_recommendations_from_profile, req.profile, ratings, req.top_n
     )
     return {"recommendations": recs}
 
@@ -67,10 +65,7 @@ async def recommend_edited(req: GenreOverrideInput, user_id: int = Depends(get_c
 @router.post("/explain")
 async def explain(req: ExplainRequest, user_id: int = Depends(get_current_user)):
     ratings = await _get_ratings(user_id)
-    try:
-        result = await asyncio.to_thread(ai_service.explain_movie, req.movie_id, ratings)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    result = await asyncio.to_thread(ai_service.explain_movie, req.movie_id, ratings)
     return result
 
 
@@ -81,5 +76,6 @@ async def importance(_: int = Depends(get_current_user)):
 
 @router.post("/user/mark-edited")
 async def mark_edited(user_id: int = Depends(get_current_user)):
+    """Record that the user has completed at least one preference edit."""
     await db.execute("UPDATE users SET has_edited = 1 WHERE id = ?", (user_id,))
     return {"status": "ok"}
