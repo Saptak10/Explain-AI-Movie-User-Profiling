@@ -2,7 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends
 
-from app.ai.ai import GENRES
+
 from app.database import db
 from app.schemas.ai_schema import EditedProfileRequest, ExplainRequest, RatingRequest, RecommendRequest
 from app.services.ai_service import ai_service
@@ -20,7 +20,7 @@ async def _get_ratings(user_id: int) -> dict:
 
 @router.get("/genres")
 async def get_genres():
-    return {"genres": GENRES}
+    return {"genres": ai_service.genres}
 
 
 @router.post("/ratings")
@@ -48,7 +48,7 @@ async def get_profile(user_id: int = Depends(get_current_user)):
 async def recommend(req: RecommendRequest, user_id: int = Depends(get_current_user)):
     ratings = await _get_ratings(user_id)
     recs = await asyncio.to_thread(
-        ai_service.get_recommendations, ratings, req.top_n, req.overrides, req.alpha
+        ai_service.get_recommendations, ratings, req.top_n
     )
     return {"recommendations": recs}
 
@@ -65,7 +65,7 @@ async def recommend_edited(req: EditedProfileRequest, user_id: int = Depends(get
 @router.post("/explain")
 async def explain(req: ExplainRequest, user_id: int = Depends(get_current_user)):
     ratings = await _get_ratings(user_id)
-    result = await asyncio.to_thread(ai_service.explain_movie, req.movie_id, ratings, req.method)
+    result = await asyncio.to_thread(ai_service.explain_movie, req.movie_id, ratings)
     return result
 
 
