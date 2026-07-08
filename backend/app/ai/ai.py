@@ -28,6 +28,9 @@ except ImportError:
  
 current_dir = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.abspath(os.path.join(current_dir, "..", "database", "ml-latest-small"))
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# print(f"Using device: {device}")
  
 OVERRIDE_MAP = {
     "strongly_reduce":  -2.0,
@@ -82,7 +85,7 @@ def build_override_tensor(user_category_dict: dict, num_genres: int) -> torch.Te
     Returns:
         Float tensor of shape (1, num_genres).
     """
-    tensor = torch.zeros(1, num_genres, dtype=torch.float32)
+    tensor = torch.zeros(1, num_genres, dtype=torch.float32).to(device)
     for genre, category in user_category_dict.items():
         if genre in GENRES and category in OVERRIDE_MAP:
             tensor[0, GENRES.index(genre)] = OVERRIDE_MAP[category]
@@ -100,7 +103,7 @@ class SoftRegularizedHCAIAutoEncoder(nn.Module):
  
         # Register the pure genre knowledge base as a fixed buffer
         target_tensor = torch.tensor(pure_genre_matrix_np, dtype=torch.float32).T
-        self.register_buffer("target_genre_matrix", target_tensor)
+        self.register_buffer("target_genre_matrix", target_tensor.to(device))
  
         # Encoder
         self.encoder_l1  = nn.Linear(num_movies, hidden_dim, bias=False)
@@ -537,6 +540,7 @@ if __name__ == "__main__":
  
     print("\nStep 4: Initializing model...")
     model     = SoftRegularizedHCAIAutoEncoder(num_movies, num_genres, pure_genre_matrix_np)
+    model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-5)
     print(f"-> Encoder initialized with genre matrix of shape {pure_genre_matrix_np.shape}.")
  
@@ -557,8 +561,8 @@ if __name__ == "__main__":
         permutation = torch.randperm(R_tensor.size(0))
         for i in range(0, R_tensor.size(0), BATCH_SIZE):
             indices    = permutation[i : i + BATCH_SIZE]
-            batch_users = R_tensor[indices]
-            batch_mask  = global_evaluation_mask[indices]
+            batch_users = R_tensor[indices].to(device)
+            batch_mask  = global_evaluation_mask[indices].to(device)
  
             t_loss, p_loss, s_loss = train_step(
                 model, optimizer, batch_users, batch_mask,

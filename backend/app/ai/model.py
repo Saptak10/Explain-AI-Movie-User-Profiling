@@ -95,7 +95,7 @@ class DualModeHCAIAutoEncoder(nn.Module):
             self.encoder_l1.weight[: self.num_genres, :].copy_(target_genre_matrix)
             nn.init.zeros_(self.encoder_l2.weight)
             self.encoder_l2.weight[:, : self.num_genres].copy_(
-                torch.eye(self.num_genres)
+                torch.eye(self.num_genres, device=self.encoder_l2.weight.device)
             )
 
     # ------------------------------------------------------------------
