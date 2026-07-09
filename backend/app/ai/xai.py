@@ -141,14 +141,69 @@ def compute_local_feature_importance(
     )
 
 
+def compute_genre_feature_importance(
+    model: DualModeHCAIAutoEncoder,
+    sparse_input_vector: torch.Tensor,
+    genre_idx: int,
+) -> dict:
+    """
+    Same leave-one-out permutation-importance methodology as
+    compute_local_feature_importance, but measuring each rated movie's
+    effect on a specific *genre's bottleneck activation*
+    (latent_profile[0, genre_idx]) instead of on a movie's predicted
+    rating. This answers "why is my {genre} score what it is?" -- the
+    Profile page's equivalent of what compute_local_feature_importance
+    already answers for a single recommended movie.
+
+    Cost: O(k) forward passes where k = number of the user's non-zero
+    ratings, same complexity class as compute_local_feature_importance.
+
+    Args:
+        model: trained DualModeHCAIAutoEncoder, in eval() mode by caller
+               convention.
+        sparse_input_vector: (1, num_movies) float32, the user's actual
+                              sparse rating vector.
+        genre_idx: dense index (column) of the genre whose bottleneck
+                    activation's sensitivity to each rating is being
+                    explained.
+
+    Returns:
+        Dict {movie_dense_idx (int): importance (float)}, restricted to
+        exactly the non-zero positions of sparse_input_vector, sorted by
+        descending absolute importance.
+    """
+    with torch.no_grad():
+        _, baseline_latent = model.forward_standard(sparse_input_vector)
+        baseline_activation = baseline_latent[0, genre_idx].item()
+
+        nonzero_positions = torch.nonzero(
+            sparse_input_vector[0], as_tuple=False
+        ).flatten().tolist()
+
+        importances: dict = {}
+        for pos in nonzero_positions:
+            perturbed = sparse_input_vector.clone()
+            perturbed[0, pos] = 0.0
+            _, perturbed_latent = model.forward_standard(perturbed)
+            perturbed_activation = perturbed_latent[0, genre_idx].item()
+            importances[pos] = baseline_activation - perturbed_activation
+
+    return dict(
+        sorted(importances.items(), key=lambda kv: abs(kv[1]), reverse=True)
+    )
+
+
 def generate_soft_rationale(
     sparse_input_vector: torch.Tensor,
     latent_profile: torch.Tensor,
     target_movie_idx: int,
     id_mapping: IdMapping,
     genre_mask_row: list,
-    genre_dominance_threshold: float = 0.6,
+    predicted_score: float = None,
+    baseline_score: float = None,
     top_contributing_ratings: int = 1,
+    max_cited_genres: int = 3,
+    lift_threshold: float = 0.15,
 ) -> str:
     """
     Soft Rationale Logic: cross-references the user's non-zero inputs, the
@@ -156,6 +211,21 @@ def generate_soft_rationale(
     genre membership to produce a natural-language rationale string such
     as: "Recommended because your Action profile is high, heavily
     influenced by your 5-star rating of Iron Man."
+
+    When no genre is individually dominant, the rationale falls back to
+    describing the actual mechanism that ranks recommendations end-to-end
+    (see AIService._top_n_from_scores): personalization *lift* --
+    predicted_score minus baseline_score, the movie's genre-neutral
+    expected score (see AIService._compute_baseline). A movie can rank
+    highly for two different reasons that deserve two different
+    explanations: (a) it fits this user's specific taste beyond generic
+    appeal (high lift), or (b) it's a broadly well-liked movie that also
+    clears this user's own quality bar (high absolute score, low lift).
+    Conflating both into one generic "collaborative filtering patterns"
+    message (the old behavior) doesn't actually say anything about why a
+    specific movie surfaced. If predicted_score/baseline_score aren't
+    supplied, falls back to that old generic message -- callers should
+    always supply them going forward (see AIService.explain_movie).
 
     Args:
         sparse_input_vector: (1, num_movies) the user's sparse ratings.
@@ -168,29 +238,62 @@ def generate_soft_rationale(
         genre_mask_row: the recommended movie's own genre row (length
                         num_genres, 1.0/0.0 per genre) -- i.e.
                         id_mapping.genre_mask[target_movie_idx].
-        genre_dominance_threshold: minimum latent activation for a genre
-                                    to be called "high" in the rationale.
+        predicted_score: this user's predicted rating (0-5) for the target
+                          movie, from the same forward pass used to rank
+                          it -- required for the lift-based fallback.
+        baseline_score: the target movie's genre-neutral baseline
+                         prediction (AIService.baseline_predictions) --
+                         required for the lift-based fallback.
         top_contributing_ratings: how many of the user's highest-rated,
                                    genre-overlapping movies to cite by name.
+        max_cited_genres: cap on how many dominant genres to name in the
+                           rationale clause, so it stays a readable sentence
+                           even if many genres overlap.
+        lift_threshold: minimum (predicted_score - baseline_score) to
+                         describe a movie as fitting this user's *specific*
+                         taste rather than being broadly well-liked.
 
     Returns:
-        A natural-language rationale string. Falls back to a generic
-        collaborative-filtering rationale if no genre clears the dominance
-        threshold and overlaps the target movie's own genres.
+        A natural-language rationale string.
     """
     flat_profile = latent_profile.detach().reshape(-1)
     target_title = id_mapping.title_for_dense(target_movie_idx)
 
-    dominant_genre_indices = [
-        i
-        for i in range(len(genre_mask_row))
-        if genre_mask_row[i] > 0.0 and flat_profile[i].item() > genre_dominance_threshold
-    ]
+    # Dominance is relative to this user's own profile, not a fixed
+    # absolute cutoff: a genre counts as "dominant" here if it's one of
+    # the target movie's own genres AND this user's activation for it is
+    # above their own mean activation across all genres. A fixed
+    # threshold assumes a particular saturation level for "high" --
+    # comparing against the user's own mean instead adapts automatically
+    # to whatever distribution the model actually produces, per user,
+    # rather than needing to be re-tuned every time the model's
+    # calibration changes.
+    profile_mean = flat_profile.mean().item()
+    overlapping_indices = [i for i in range(len(genre_mask_row)) if genre_mask_row[i] > 0.0]
+    dominant_genre_indices = sorted(
+        (i for i in overlapping_indices if flat_profile[i].item() > profile_mean),
+        key=lambda i: flat_profile[i].item(),
+        reverse=True,
+    )[:max_cited_genres]
 
     if not dominant_genre_indices:
+        if predicted_score is None or baseline_score is None:
+            return (
+                f'"{target_title}" is recommended based on general collaborative '
+                f"filtering patterns across similar users."
+            )
+        lift = predicted_score - baseline_score
+        if lift > lift_threshold:
+            return (
+                f'"{target_title}" is predicted at {predicted_score:.1f}/5 for you specifically -- '
+                f"{lift:.1f} stars above what a typical viewer would get from it -- even though no "
+                f"single genre in your profile stands out as the reason. The fit comes from the "
+                f"overall pattern across your ratings, not one dominant genre."
+            )
         return (
-            f'"{target_title}" is recommended based on general collaborative '
-            f"filtering patterns across similar users."
+            f'"{target_title}" is widely well-liked regardless of genre profile '
+            f"(predicted {predicted_score:.1f}/5), and your own ratings don't suggest you'd feel "
+            f"differently."
         )
 
     dominant_genre_names = [id_mapping.genres[i] for i in dominant_genre_indices]

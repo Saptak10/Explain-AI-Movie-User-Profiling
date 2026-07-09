@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     train_epochs: int = 25
     train_lr: float = 0.01
     train_lambda_reg: float = 0.05
-    train_epsilon_clip: float = 0.15
+    personalize_epochs: int = 10
+    personalize_lr: float = 0.005
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

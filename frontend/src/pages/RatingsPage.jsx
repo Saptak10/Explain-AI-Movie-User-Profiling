@@ -8,6 +8,7 @@ export default function RatingsPage() {
   const [ratings, setRatings] = useState({})
   const [savedRatings, setSavedRatings] = useState({})
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState(false)
   const navigate = useNavigate()
 
@@ -26,6 +27,21 @@ export default function RatingsPage() {
     setRatings(prev => ({ ...prev, [movieId]: star }))
   }
 
+  // Swaps in a fresh batch of movies to rate, excluding the ones
+  // currently shown, for users whose first batch didn't include enough
+  // movies they've actually seen. Doesn't touch `ratings` — any stars
+  // already given (including for movies no longer displayed) are kept
+  // and still count toward the profile when saved.
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    try {
+      const { data } = await moviesApi.popular(movies.map(m => m.id))
+      setMovies(data.movies)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   const handleSave = async () => {
     setSaving(true)
     const changed = Object.entries(ratings).filter(
@@ -34,7 +50,15 @@ export default function RatingsPage() {
     try {
       await Promise.all(changed.map(([id, r]) => aiApi.submitRating(Number(id), r)))
       setSavedRatings({ ...ratings })
-      navigate('/profile')
+      // One-time personalization fine-tune on this user's own ratings,
+      // right as their profile is built. The result is only used for this
+      // navigation -- later visits to /profile fetch the shared model as usual.
+      try {
+        const { data } = await aiApi.personalizeProfile()
+        navigate('/profile', { state: { profile: data.profile } })
+      } catch {
+        navigate('/profile')
+      }
     } finally {
       setSaving(false)
     }
@@ -55,6 +79,14 @@ export default function RatingsPage() {
         </div>
         <div className="page-header-actions">
           <span className="badge">{ratedCount} rated</span>
+          <button
+            className="btn-secondary"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="Don't recognize these? Get a different batch of movies to rate."
+          >
+            {refreshing ? 'Refreshing…' : '🔄 Refresh Suggestions'}
+          </button>
           <button
             className="btn-primary"
             onClick={handleSave}

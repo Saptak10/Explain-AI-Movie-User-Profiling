@@ -66,7 +66,6 @@ def train_step(
     target_batch: torch.Tensor,
     hidden_mask_batch: torch.Tensor,
     lambda_reg: float = 0.05,
-    epsilon_clip: float = 0.15,
 ) -> tuple:
     """
     One optimized HCAI training step against streamed, masked mini-batches.
@@ -81,8 +80,8 @@ def train_step(
         hidden_mask_batch: (batch, num_movies) bool -- True exactly at the
                             positions that were hidden this draw; loss is
                             computed strictly here.
-        lambda_reg: weight of the semantic-drift regularization term.
-        epsilon_clip: weight-clipping radius applied after the optimizer step.
+        lambda_reg: weight of the residual-pathway L2 regularization term
+                    (see DualModeHCAIAutoEncoder.get_semantic_loss).
 
     Returns:
         (total_loss, pred_loss, semantic_loss) as Python floats.
@@ -97,7 +96,5 @@ def train_step(
 
     total_loss.backward()
     optimizer.step()
-
-    model.apply_weight_clipping(epsilon=epsilon_clip)
 
     return total_loss.item(), pred_loss.item(), semantic_loss.item()

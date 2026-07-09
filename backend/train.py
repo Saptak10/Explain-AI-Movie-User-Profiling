@@ -105,7 +105,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hidden-dim",  type=int,   default=128)
     p.add_argument("--mask-fraction", type=float, default=0.2)
     p.add_argument("--lambda-reg",  type=float, default=0.05)
-    p.add_argument("--epsilon-clip",type=float, default=0.15)
     p.add_argument("--seed",        type=int,   default=42)
     p.add_argument("--resume",      type=str,   default=None,
                    help="Path to an existing checkpoint to resume training from.")
@@ -673,7 +672,6 @@ def main() -> None:
                     batch["target_vector"].to(device),
                     batch["hidden_mask"].to(device),
                     lambda_reg=args.lambda_reg,
-                    epsilon_clip=args.epsilon_clip,
                 )
                 running_loss += total_loss
                 n_batches    += 1

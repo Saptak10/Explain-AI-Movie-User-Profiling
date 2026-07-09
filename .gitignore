@@ -213,3 +213,10 @@ Session.vim
 tmp/
 temp/
 CLAUDE.md
+backend/app/database/ml-latest/genome-scores.csv
+backend/app/database/ml-latest/genome-tags.csv
+backend/app/database/ml-latest/links.csv
+backend/app/database/ml-latest/movies.csv
+backend/app/database/ml-latest/ratings.csv
+backend/app/database/ml-latest/README.txt
+backend/app/database/ml-latest/tags.csv

@@ -258,15 +258,29 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
 /* ── Stars ────────────────────────────────────────────────────────────────── */
 .stars { display: flex; align-items: center; gap: 2px; }
 .star {
+  position: relative;
+  display: inline-block;
   background: none;
+  border: none;
+  cursor: pointer;
   font-size: 1.4rem;
-  color: #d1d5db;
-  transition: color .1s, transform .1s;
   line-height: 1;
   padding: 0 1px;
+  transition: transform .1s;
 }
-.star:hover, .star.filled { color: var(--star); }
 .star:hover { transform: scale(1.15); }
+.star-bg { color: #d1d5db; transition: color .1s; }
+.star:hover .star-bg { color: var(--star); opacity: .35; }
+.star-fg {
+  position: absolute;
+  top: 0;
+  left: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--star);
+  pointer-events: none;
+  transition: color .1s;
+}
 .star-label { font-size: .75rem; color: var(--text-muted); margin-left: .3rem; }
 
 /* ── Sticky CTA ───────────────────────────────────────────────────────────── */
@@ -310,6 +324,13 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
 .bar-fill-suppress { height: 100%; background: linear-gradient(90deg, #f87171, #dc2626); border-radius: 5px; transition: width .4s ease; }
 .genre-pct  { width: 38px; text-align: right; font-size: .8rem; color: var(--text-muted); flex-shrink: 0; }
 .genre-row-edit { flex-wrap: wrap; }
+.genre-row-wrap.expanded {
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .5rem .75rem;
+}
+.genre-row-wrap.expanded .genre-row { margin-bottom: .5rem; }
 
 /* ── Recommendations layout ───────────────────────────────────────────────── */
 .recommend-layout {
@@ -479,6 +500,14 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
 .version-o { background: #dcfce7; color: #166534; }
 .version-n { background: #f1f5f9; color: #475569; }
 
+.dev-preview-toggle {
+  font-size: .7rem;
+  padding: .15rem .55rem;
+  border: 1px dashed var(--border);
+  opacity: .75;
+}
+.dev-preview-toggle:hover { opacity: 1; }
+
 /* ── Version guidance banner ──────────────────────────────────────────────── */
 .version-guidance-banner {
   background: var(--card);
@@ -493,6 +522,10 @@ button { cursor: pointer; border: none; font-family: inherit; font-size: .875rem
 }
 
 /* ── Full-width rec list (replaces two-column layout) ─────────────────────── */
+.rec-section { margin-bottom: 2rem; }
+.rec-section-header { margin-bottom: .9rem; }
+.rec-section-header h2 { font-size: 1.05rem; font-weight: 700; margin: 0 0 .25rem; }
+.rec-section-header p { margin: 0; font-size: .85rem; }
 .rec-list-full { display: flex; flex-direction: column; gap: .75rem; }
 
 .rec-card-full {

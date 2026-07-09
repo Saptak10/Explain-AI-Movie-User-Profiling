@@ -9,17 +9,25 @@ prototype to:
       implicit override-tensor branch, so the API layer can call either
       mode unambiguously.
 
-The encoder -> bottleneck -> decoder architecture, the weight-clipping
-knowledge-injection strategy, and the override-impact / edited-profile
-HCAI mechanics are carried over from the original SoftRegularizedHCAIAutoEncoder
-design largely unchanged -- this refactor is about plumbing (dynamic sizes,
-explicit mode routing, sparse-input hydration), not about redesigning the
-HCAI architecture itself.
+Genre-bottleneck calibration (current design): earlier versions built the
+genre logit by seeding encoder_l1/encoder_l2 with a hard 0/1 genre-mask
+prior and elastically clipping them back toward it after every optimizer
+step ("weight clipping"). That made the logit an unnormalized SUM of a
+user's ratings in a genre -- a user with 1 rating and a user with 200
+ratings in the same genre produced wildly different-scale logits that no
+single temperature scalar could reconcile, and ~85% of the hidden layer
+fed the bottleneck completely unregularized on top of that. The bottleneck
+is now built from two additive parts instead (see forward_standard):
+  1. An *anchored* signal computed directly (not learned) from
+     target_genre_matrix -- a count-normalized, Bayesian-smoothed average
+     rating per genre. This is exact and count-invariant by construction,
+     so it needs no weight-clipping at all (there are no weights in it).
+  2. A small, tanh-bounded *residual* signal from a freely-trained hidden
+     layer, adding nuance without being able to dominate the anchored
+     signal the way the old unregularized free pathway could.
 """
 
 from __future__ import annotations
-
-import math
 
 import torch
 import torch.nn as nn
@@ -53,11 +61,17 @@ class DualModeHCAIAutoEncoder(nn.Module):
         # Prior-knowledge matrix: (num_genres, num_movies). Row g, column m
         # is 1.0 if movie m belongs to genre g. Built once here from the
         # IdMapping's (num_movies, num_genres) genre_mask via transpose.
+        # Used directly in forward_standard's masked-mean pooling -- this
+        # buffer IS the anchored genre signal's source of truth now, not
+        # just an init/clip target for a learned weight matrix.
         genre_mask_tensor = torch.tensor(id_mapping.genre_mask, dtype=torch.float32)
         target_genre_matrix = genre_mask_tensor.T.contiguous()  # (num_genres, num_movies)
         self.register_buffer("target_genre_matrix", target_genre_matrix)
 
-        # Encoder: Input Layer (movies) -> hidden -> Bottleneck (genres)
+        # Residual encoder pathway only -- the anchored genre signal is a
+        # closed-form computation in forward_standard (see module
+        # docstring), not learned, so this no longer needs prior-knowledge
+        # weight injection. Standard init; bounded via tanh at use-time.
         self.encoder_l1 = nn.Linear(self.num_movies, hidden_dim, bias=False)
         self.encoder_act = nn.ReLU()
         self.encoder_l2 = nn.Linear(hidden_dim, self.num_genres, bias=False)
@@ -68,35 +82,28 @@ class DualModeHCAIAutoEncoder(nn.Module):
         self.decoder_act = nn.ReLU()
         self.decoder_l2 = nn.Linear(hidden_dim, self.num_movies)
 
-        self._inject_prior_knowledge(target_genre_matrix)
+        # Fixed (not learned) parameters of the closed-form anchored-signal
+        # computation: count_smoothing is the Bayesian/Laplace pseudo-count
+        # pulling low-rating-count genres toward rating_midpoint (the
+        # neutral point of the 0-5 rating scale) instead of letting a
+        # single rating swing the mean to its extreme.
+        self.count_smoothing = 1.5
+        self.rating_midpoint = 2.5
 
-    def _inject_prior_knowledge(self, target_genre_matrix: torch.Tensor) -> None:
-        """
-        Hardcoded prior-knowledge weight injection: seeds the first
-        num_genres rows of encoder_l1's weight with the real genre mask, and
-        the first num_genres columns of encoder_l2's weight with an
-        identity matrix, so the bottleneck starts out strictly bound to
-        real-world genres before any gradient step has been taken.
+        # Learnable temperature dividing the anchored logit before the
+        # sigmoid in forward_standard -- now scaling a count-normalized
+        # average (bounded ~0-5 range) rather than an unbounded sum, so a
+        # single global value can meaningfully calibrate it regardless of
+        # how many ratings a user has in a given genre.
+        self.genre_temperature = nn.Parameter(torch.tensor(5.0))
 
-        Guard: if hidden_dim < num_genres this injection cannot fit
-        (there would not be enough hidden-layer rows/encoder_l2 columns to
-        seed), so we raise early with a clear message rather than silently
-        truncating the injected prior, which would corrupt the very
-        knowledge-injection guarantee this architecture is built on.
-        """
-        if self.hidden_dim < self.num_genres:
-            raise ValueError(
-                f"hidden_dim ({self.hidden_dim}) must be >= num_genres "
-                f"({self.num_genres}) for the prior-knowledge injection to "
-                f"fit into the hidden layer."
-            )
-        with torch.no_grad():
-            nn.init.kaiming_uniform_(self.encoder_l1.weight, a=math.sqrt(5))
-            self.encoder_l1.weight[: self.num_genres, :].copy_(target_genre_matrix)
-            nn.init.zeros_(self.encoder_l2.weight)
-            self.encoder_l2.weight[:, : self.num_genres].copy_(
-                torch.eye(self.num_genres, device=self.encoder_l2.weight.device)
-            )
+        # Learnable scale bounding the residual pathway's contribution to
+        # the genre logit via tanh -- starts modest so the count-normalized
+        # anchored signal dominates by default; clamped at use-time to
+        # [0, 2.0] so it can grow with training but can never swamp the
+        # anchored signal the way the old fully-unregularized free pathway
+        # could (see get_semantic_loss for the complementary L2 penalty).
+        self.residual_scale = nn.Parameter(torch.tensor(0.5))
 
     # ------------------------------------------------------------------
     # Dual-Mode Forward
@@ -107,6 +114,15 @@ class DualModeHCAIAutoEncoder(nn.Module):
         Standard Mode: complete end-to-end traversal.
             Input Layer (movies) -> Bottleneck (genres) -> Output Layer (movies)
 
+        The genre bottleneck logit is the sum of two parts (see module
+        docstring for the motivation):
+          1. Anchored: a Bayesian-smoothed, count-normalized average of the
+             user's ratings within each genre, computed directly from
+             target_genre_matrix -- exact and count-invariant, not learned.
+          2. Residual: a small tanh-bounded signal from a freely-trained
+             hidden layer, adding nuance without dominating the anchored
+             signal.
+
         Args:
             x: (batch, num_movies) float32 -- sparse rating vectors
                (0.0 for unrated movies).
@@ -116,8 +132,27 @@ class DualModeHCAIAutoEncoder(nn.Module):
                 predicted_ratings:    (batch, num_movies) in [0, 5]
                 latent_genre_profile: (batch, num_genres) in [0, 1]
         """
+        rated_mask = (x != 0).float()                              # (batch, num_movies)
+        genre_sum = x @ self.target_genre_matrix.T                  # (batch, num_genres)
+        genre_count = rated_mask @ self.target_genre_matrix.T       # (batch, num_genres)
+        # Bayesian/Laplace-smoothed mean: shrinks toward rating_midpoint
+        # when genre_count is 0 or small (count_smoothing acts as a prior
+        # pseudo-count at the neutral rating), converges to the true
+        # per-genre average as genre_count grows -- e.g. genre_count=0
+        # gives exactly rating_midpoint (fully neutral), regardless of
+        # temperature.
+        genre_mean = (
+            genre_sum + self.count_smoothing * self.rating_midpoint
+        ) / (genre_count + self.count_smoothing)
+
+        temperature = self.genre_temperature.clamp(min=0.5)
+        anchored_logit = (genre_mean - self.rating_midpoint) / temperature
+
         h_enc = self.encoder_act(self.encoder_l1(x))
-        latent_profile = torch.sigmoid(self.encoder_l2(h_enc))
+        residual_scale = self.residual_scale.clamp(min=0.0, max=2.0)
+        residual_logit = torch.tanh(self.encoder_l2(h_enc)) * residual_scale
+
+        latent_profile = torch.sigmoid(anchored_logit + residual_logit)
 
         h_dec = self.decoder_act(self.decoder_l1(self.dropout(latent_profile)))
         predicted_ratings = torch.sigmoid(self.decoder_l2(h_dec)) * 5.0
@@ -176,48 +211,30 @@ class DualModeHCAIAutoEncoder(nn.Module):
         raise ValueError("Provide either `x` or `override_profile`.")
 
     # ------------------------------------------------------------------
-    # Knowledge-injection maintenance
+    # Residual-pathway regularization
     # ------------------------------------------------------------------
-
-    def apply_weight_clipping(self, epsilon: float = 0.15) -> None:
-        """
-        Elastic-leash regularization: after each optimizer step, clamps the
-        prior-knowledge-seeded weights back to within `epsilon` of their
-        original semantic values, keeping the bottleneck nodes strictly
-        bound to real-world genres throughout training rather than letting
-        gradient descent freely drift them away from genre semantics.
-        """
-        with torch.no_grad():
-            dev_l1 = (
-                self.encoder_l1.weight[: self.num_genres, :] - self.target_genre_matrix
-            )
-            self.encoder_l1.weight[: self.num_genres, :].copy_(
-                self.target_genre_matrix + torch.clamp(dev_l1, -epsilon, epsilon)
-            )
-            identity = torch.eye(self.num_genres, device=self.encoder_l2.weight.device)
-            dev_l2 = self.encoder_l2.weight[:, : self.num_genres] - identity
-            self.encoder_l2.weight[:, : self.num_genres].copy_(
-                identity + torch.clamp(dev_l2, -epsilon, epsilon)
-            )
+    #
+    # No apply_weight_clipping() anymore: the anchored genre signal is a
+    # closed-form computation from target_genre_matrix (see
+    # forward_standard), not a learned weight matrix, so there is nothing
+    # left to clip toward a prior -- it cannot drift by construction.
 
     def get_semantic_loss(self) -> torch.Tensor:
         """
-        Squared drift of the prior-knowledge-seeded weights from their
-        semantic anchors. Uses torch.mean (not torch.sum): at ml-latest
-        scale, num_movies ~ 87,000, so a sum over (num_genres * num_movies)
-        elements would numerically dominate the prediction loss and stall
-        learning -- exactly the bug the original implementation's
-        docstring already called out, and which only gets worse as
-        num_movies grows from ~9.7k to ~87k.
+        L2 penalty on the residual encoder pathway's weights (encoder_l1,
+        encoder_l2). These no longer anchor to a hard genre prior -- that
+        anchoring is now exact and weight-free (see forward_standard) -- so
+        this term instead discourages the *residual* pathway from growing
+        large, complementing the tanh/residual_scale bound in
+        forward_standard so the residual can add nuance without dominating
+        the count-normalized anchored signal. Uses torch.mean (not
+        torch.sum): at ml-latest scale, num_movies ~ 87,000, so a sum would
+        numerically dominate the prediction loss and stall learning.
         """
-        loss_l1 = torch.mean(
-            (self.encoder_l1.weight[: self.num_genres, :] - self.target_genre_matrix) ** 2
+        return (
+            torch.mean(self.encoder_l1.weight ** 2)
+            + torch.mean(self.encoder_l2.weight ** 2)
         )
-        identity = torch.eye(self.num_genres, device=self.encoder_l2.weight.device)
-        loss_l2 = torch.mean(
-            (self.encoder_l2.weight[:, : self.num_genres] - identity) ** 2
-        )
-        return loss_l1 + loss_l2
 
     # ------------------------------------------------------------------
     # HCAI explainability helpers (operate on a forward_standard() result)
