@@ -66,6 +66,7 @@ def init_db(path: str) -> None:
         ("sus_done",   "INTEGER NOT NULL DEFAULT 0"),
         ("version",    "TEXT NOT NULL DEFAULT 'O'"),
         ("edit_order", "TEXT"),
+        ("sus_score",  "REAL"),
     ]:
         try:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {defn}")
@@ -187,6 +188,37 @@ def init_db(path: str) -> None:
                 UNIQUE(user_id, question_idx)
             )
         """)
+
+    # ── Profile overrides — persisted genre-preference deltas from the
+    # Edit Profile UI, so a user's edits keep affecting /api/profile and
+    # /api/recommend on every future visit instead of only the one request
+    # they were made in. Stored as deltas (not absolute values) relative to
+    # whatever the AI-inferred profile is at read time, matching the UI's
+    # boost/suppress language and staying meaningful as the AI profile
+    # itself shifts with new ratings. One row per (user, genre); absence of
+    # a row means "no override for this genre."
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS profile_overrides (
+            user_id INTEGER NOT NULL,
+            genre   TEXT    NOT NULL,
+            delta   REAL    NOT NULL,
+            PRIMARY KEY (user_id, genre),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    # ── Profile snapshots — the latest AI-inferred (+ override-adjusted)
+    # taste profile per user, saved as JSON whenever GET /api/profile is
+    # served, so researchers can query a user's profile directly from the
+    # database without re-deriving it through the API/model.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS profile_snapshots (
+            user_id      INTEGER PRIMARY KEY,
+            profile_json TEXT    NOT NULL,
+            updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
 
     conn.commit()
     conn.close()

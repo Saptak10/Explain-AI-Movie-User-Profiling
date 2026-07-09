@@ -22,6 +22,8 @@ calls train_step from losses.py per mini-batch, so peak RAM stays
 O(batch_size * num_movies) regardless of the 33M-row dataset size.
 """
 
+import copy
+import random
 from pathlib import Path
 
 import torch
@@ -34,6 +36,7 @@ from app.ai.data_pipeline import SparseUserVectorDataset
 from app.ai.xai import (
     hydrate_sparse_input,
     compute_local_feature_importance,
+    compute_genre_feature_importance,
     generate_soft_rationale,
 )
 
@@ -44,6 +47,16 @@ class AIService:
         self.id_mapping: IdMapping = None
         self.popular_movies: list = []
         self.global_importance: dict = {}
+        # Genre-neutral baseline prediction per movie -- see _init(). Used to
+        # rank recommendations by personalization "lift" instead of raw
+        # score, so movies with a strong genre-independent decoder bias
+        # (documentaries were the clearest case: several ranked in the
+        # global top-20 even against a fully neutral 50%-every-genre input)
+        # don't dominate every user's recommendations regardless of fit.
+        self.baseline_predictions: torch.Tensor = None
+        self.device: torch.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self._save_path: str = ""
         self._movies_csv_path: str = ""
         self._ratings_csv_path: str = ""
@@ -86,7 +99,8 @@ class AIService:
         id_mapping = build_id_mapping(self._movies_csv_path)
         print(f"  {id_mapping.num_movies} movies, {id_mapping.num_genres} genres discovered.")
 
-        model = DualModeHCAIAutoEncoder(id_mapping, hidden_dim=128)
+        print(f"Training on device: {self.device}")
+        model = DualModeHCAIAutoEncoder(id_mapping, hidden_dim=128).to(self.device)
         optimizer = torch.optim.Adam(
             model.parameters(), lr=settings.train_lr, weight_decay=1e-5
         )
@@ -107,11 +121,10 @@ class AIService:
                 total_loss, _, _ = train_step(
                     model,
                     optimizer,
-                    batch["input_vector"],
-                    batch["target_vector"],
-                    batch["hidden_mask"],
+                    batch["input_vector"].to(self.device),
+                    batch["target_vector"].to(self.device),
+                    batch["hidden_mask"].to(self.device),
                     lambda_reg=settings.train_lambda_reg,
-                    epsilon_clip=settings.train_epsilon_clip,
                 )
                 running_loss += total_loss
                 num_batches += 1
@@ -146,10 +159,10 @@ class AIService:
         loaded model always serves exactly the ID space it was trained on
         even if movies.csv has since changed on disk.
         """
-        # map_location=cpu: checkpoints may have been trained on a CUDA
-        # machine; this service only ever does small-batch CPU inference,
-        # so always remap tensors to CPU regardless of what trained them.
-        ck = torch.load(self._save_path, weights_only=False, map_location="cpu")
+        # Checkpoints may have been trained on a CUDA machine; remap to
+        # whatever device is actually available here (CPU on a laptop or
+        # a free-tier deploy, CUDA if present) rather than assuming either.
+        ck = torch.load(self._save_path, map_location=self.device, weights_only=False)
 
         id_mapping = IdMapping(
             movie_id_to_idx=ck["movie_id_to_idx"],
@@ -169,6 +182,13 @@ class AIService:
         self._init(model, id_mapping)
 
     def _init(self, model: DualModeHCAIAutoEncoder, id_mapping: IdMapping) -> None:
+        # load() constructs a fresh (CPU-default) model and copies checkpoint
+        # values into it via load_state_dict, which preserves the destination
+        # tensors' device rather than adopting the source's -- so this .to()
+        # is what actually puts the model on the GPU for serving, not the
+        # map_location passed to torch.load in load(). train_and_save()
+        # already trains on self.device, so this is a no-op there.
+        model = model.to(self.device)
         self.model = model
         self.id_mapping = id_mapping
 
@@ -188,10 +208,17 @@ class AIService:
         # does not require scanning ratings.csv at startup. If true
         # popularity-by-rating-count is needed, compute and cache it once
         # during train_and_save and persist it in the checkpoint instead.
+        #
+        # Cached pool is much larger than any one page shown to a user
+        # (get_popular_sample below draws a random subset per request) --
+        # this is what lets the Rate page's "Refresh Suggestions" surface a
+        # genuinely different batch instead of the same fixed 50 every
+        # time, for users whose first batch didn't include enough movies
+        # they've actually seen to rate.
         with torch.no_grad():
             decoder_eff = model.decoder_l2.weight @ model.decoder_l1.weight
             movie_salience = decoder_eff.abs().sum(dim=1)
-        top_idx = torch.argsort(movie_salience, descending=True)[:50].tolist()
+        top_idx = torch.argsort(movie_salience, descending=True)[:500].tolist()
         self.popular_movies = [
             {
                 "id": id_mapping.dense_to_movie_id(i),
@@ -199,74 +226,194 @@ class AIService:
             }
             for i in top_idx
         ]
+
+        self.baseline_predictions = self._compute_baseline(model)
         print("AI service ready.")
+
+    def _compute_baseline(self, model: DualModeHCAIAutoEncoder) -> torch.Tensor:
+        """
+        Runs the decoder on a fully genre-neutral profile (0.5 for every
+        genre -- the "no distinguishing signal at all" input under this
+        architecture's Bayesian-smoothed calibration, see model.py) to get
+        each movie's baseline predicted score independent of any user's
+        genre profile. This isolates the decoder's per-movie bias term
+        (learned generic appeal) from genre-driven signal -- ranking by
+        raw predicted score conflates the two, which is exactly why movies
+        with a high bias but poor genre fit (documentaries were the
+        clearest case) were being recommended regardless of a user's
+        actual profile.
+        """
+        neutral = torch.full((1, model.num_genres), 0.5, device=self.device)
+        model.eval()
+        with torch.no_grad():
+            baseline = model.forward_interactive(neutral)
+        return baseline[0]
+
+    def get_popular_sample(self, exclude_ids: set = None, count: int = 50) -> list:
+        """
+        Random sample of `count` movies from the cached popularity pool
+        (see _init, ~500 movies), excluding any already-shown IDs so
+        "Refresh Suggestions" on the Rate page surfaces a genuinely
+        different batch instead of repeating the same movies -- useful for
+        a user whose first batch didn't include enough movies they've
+        actually seen to build a meaningful profile from. Falls back to
+        allowing repeats if excluding leaves too few candidates (e.g. the
+        user has refreshed enough times to exhaust the pool), rather than
+        ever returning fewer than requested.
+        """
+        exclude_ids = exclude_ids or set()
+        candidates = [m for m in self.popular_movies if m["id"] not in exclude_ids]
+        if len(candidates) < count:
+            candidates = self.popular_movies
+        return random.sample(candidates, min(count, len(candidates)))
 
     # ── Inference ────────────────────────────────────────────────────────────
 
-    def get_profile(self, ratings: dict) -> dict:
+    def _merge_overrides_into_latent(
+        self, latent_profile: torch.Tensor, overrides: dict
+    ) -> torch.Tensor:
+        """
+        Applies persisted/just-submitted genre-preference deltas on top of
+        the AI-inferred (1, num_genres) latent profile, clamped back into
+        [0, 1]. Returns a new tensor -- never mutates latent_profile in
+        place, since callers may still need the un-overridden version.
+        """
+        if not overrides:
+            return latent_profile
+        merged = latent_profile.clone()
+        for genre_name, delta in overrides.items():
+            genre_idx = self.id_mapping.genre_to_idx.get(genre_name)
+            if genre_idx is not None:
+                merged[0, genre_idx] = torch.clamp(
+                    merged[0, genre_idx] + float(delta), 0.0, 1.0
+                )
+        return merged
+
+    def get_profile(self, ratings: dict, overrides: dict = None) -> dict:
         """
         Standard-mode genre taste profile: hydrates the sparse ratings dict,
-        runs the full encoder -> bottleneck pass, and returns a
-        {genre_name: percentage} dict via extract_taste_profile.
+        runs the full encoder -> bottleneck pass, applies any persisted
+        genre-preference overrides (see profile_overrides table /
+        ai_routes.py), and returns a {genre_name: percentage} dict via
+        extract_taste_profile -- so a user's past edits keep showing up as
+        "their" profile on every future visit, not just the one request
+        they were made in.
         """
-        vec = hydrate_sparse_input(ratings, self.id_mapping)
+        vec = hydrate_sparse_input(ratings, self.id_mapping).to(self.device)
         self.model.eval()
         with torch.no_grad():
             _, latent_profile = self.model.forward_standard(vec)
+        latent_profile = self._merge_overrides_into_latent(latent_profile, overrides)
         return self.model.extract_taste_profile(latent_profile[0], self.id_mapping.genres)
 
-    def get_recommendations(self, ratings: dict, top_n: int = 10) -> list:
+    def explain_profile(self, ratings: dict, top_genres: int = None, overrides: dict = None) -> dict:
         """
-        Standard Mode end-to-end recommendations: hydrate -> forward_standard
-        -> exclude already-rated movies -> top_n by score -> translate
-        indices back to real MovieLens IDs.
+        Human-Centered XAI for the Taste Profile page: the taste profile
+        itself (same as get_profile, overrides included), plus, for every
+        genre (or the top `top_genres` if given), the movies they rated
+        that most drove that genre's score -- answering "why is my {genre}
+        score what it is?" the same way explain_movie answers "why was this
+        movie recommended?".
+
+        The citations themselves are computed against the AI's genuine,
+        un-overridden signal (compute_genre_feature_importance below runs
+        against the raw encoder output) even when overrides shift which
+        genres end up in the top N or what percentage is displayed --
+        overrides are a user-driven adjustment layer, not something for the
+        model to "explain" a rating-based cause for.
+
+        Kept as a separate, more expensive endpoint from GET /api/profile
+        (which stays cheap, a single forward pass) since this costs O(k)
+        extra forward passes per genre explained, k = the user's number of
+        non-zero ratings -- with ~19 genres and typically tens of ratings,
+        explaining every genre is still comfortably real-time; this is why
+        it's fetched lazily by the frontend on first "Why?" click, not on
+        every page load.
+
+        Returns:
+            {
+              "profile": {genre_name: percentage, ...},
+              "genre_explanations": {
+                genre_name: [{"movie_id": int, "title": str, "importance": float}, ...],
+                ...
+              }
+            }
         """
-        vec = hydrate_sparse_input(ratings, self.id_mapping)
+        vec = hydrate_sparse_input(ratings, self.id_mapping).to(self.device)
         self.model.eval()
         with torch.no_grad():
-            predictions, _ = self.model.forward_standard(vec)
+            _, latent_profile = self.model.forward_standard(vec)
+        display_profile = self._merge_overrides_into_latent(latent_profile, overrides)
+        profile = self.model.extract_taste_profile(display_profile[0], self.id_mapping.genres)
 
-        scores = predictions[0]
-        rated_movie_ids = {int(k) for k in ratings}
-        candidate_order = torch.argsort(scores, descending=True)
-
-        results = []
-        for dense_idx_tensor in candidate_order:
-            dense_idx = int(dense_idx_tensor.item())
-            real_movie_id = self.id_mapping.dense_to_movie_id(dense_idx)
-            if real_movie_id in rated_movie_ids:
+        genre_explanations = {}
+        for genre_name in list(profile.keys())[:top_genres]:
+            genre_idx = self.id_mapping.genre_to_idx.get(genre_name)
+            if genre_idx is None:
                 continue
-            results.append({
-                "movie_id": real_movie_id,
-                "title": self.id_mapping.title_for_dense(dense_idx),
-                "score": round(float(scores[dense_idx].item()), 3),
-            })
-            if len(results) >= top_n:
-                break
-        return results
+            importances_by_idx = compute_genre_feature_importance(self.model, vec, genre_idx)
+            genre_explanations[genre_name] = [
+                {
+                    "movie_id": self.id_mapping.dense_to_movie_id(idx),
+                    "title": self.id_mapping.title_for_dense(idx),
+                    "importance": round(float(value), 4),
+                }
+                for idx, value in list(importances_by_idx.items())[:5]
+            ]
 
-    def get_recommendations_from_profile(
-        self, genre_overrides: dict, ratings: dict, top_n: int = 10
+        return {"profile": profile, "genre_explanations": genre_explanations}
+
+    # Quality floor for lift-ranking (see _top_n_from_scores) -- a candidate
+    # must be predicted at least this well-liked before "lift" is allowed
+    # to influence its rank at all. Pure lift with no floor has a real
+    # failure mode: a genuinely bad movie with an equally-low genre-neutral
+    # baseline can still show *positive* lift (it merely underperforms its
+    # own low expectations by less than average), which would rank it
+    # above genuinely good, broadly-loved movies whose lift is near zero
+    # precisely because they're already correctly predicted well for
+    # everyone. Confirmed by testing: unconditional lift-ranking surfaced
+    # "Birdemic: Shock and Terror" and similar near-unwatchable movies
+    # ahead of far better predictions.
+    MIN_SCORE_FOR_LIFT_RANKING = 3.0
+
+    def _top_n_from_scores(
+        self,
+        scores: torch.Tensor,
+        rated_movie_ids: set,
+        top_n: int,
+        baseline: torch.Tensor = None,
     ) -> list:
         """
-        Interactive Profile Mode: accepts {genre_name: weight} slider
-        overrides from the UI, builds the (1, num_genres) override tensor,
-        runs forward_interactive (which never touches the encoder layers),
-        and returns top_n recommendations the same way as standard mode.
+        Shared candidate-ranking tail used by every inference path that ends
+        in "top_n scored movies, excluding ones the user already rated":
+        get_recommendations and create_personalized_profile both call this
+        instead of duplicating the same argsort/exclude/translate loop.
+
+        If `baseline` is given (see _compute_baseline), candidates that
+        clear MIN_SCORE_FOR_LIFT_RANKING are *ranked* by personalization
+        lift (scores - baseline) rather than raw score, so that among
+        movies already predicted to be genuinely well-liked, ones matched
+        to this user's *specific* profile outrank ones that are merely
+        universally high-scoring regardless of fit (movies with a strong
+        genre-independent decoder bias -- see _compute_baseline's
+        docstring -- would otherwise dominate every user's top-N
+        regardless of genre alignment). Candidates below the quality floor
+        are ranked by raw score only, at the bottom, so lift can never
+        promote a poorly-predicted movie above a well-predicted one. The
+        *displayed* "score" is always the raw predicted rating either way,
+        since that's the number actually meaningful to a user.
         """
-        override_vec = torch.zeros(1, self.id_mapping.num_genres)
-        for genre_name, weight in genre_overrides.items():
-            genre_idx = self.id_mapping.genre_to_idx.get(genre_name)
-            if genre_idx is not None:
-                override_vec[0, genre_idx] = float(weight)
-
-        self.model.eval()
-        with torch.no_grad():
-            predictions = self.model.forward_interactive(override_vec)
-
-        scores = predictions[0]
-        rated_movie_ids = {int(k) for k in ratings}
-        candidate_order = torch.argsort(scores, descending=True)
+        if baseline is None:
+            rank_scores = scores
+        else:
+            passes_floor = scores >= self.MIN_SCORE_FOR_LIFT_RANKING
+            lift = scores - baseline
+            # Below-floor candidates get their raw score minus a large
+            # constant, so they always sort after every above-floor
+            # candidate (which are ranked amongst themselves by lift) while
+            # still preserving relative order within the below-floor group.
+            rank_scores = torch.where(passes_floor, lift, scores - 100.0)
+        candidate_order = torch.argsort(rank_scores, descending=True)
 
         results = []
         for dense_idx_tensor in candidate_order:
@@ -283,22 +430,130 @@ class AIService:
                 break
         return results
 
-    def explain_movie(self, movie_id: int, ratings: dict) -> dict:
+    def _rank_both(
+        self, scores: torch.Tensor, rated_movie_ids: set, top_n: int, baseline: torch.Tensor
+    ) -> dict:
+        """
+        Produces both recommendation orderings from a single, already-computed
+        predictions tensor -- no extra model forward pass needed, just two
+        argsorts over the same scores:
+          - "top_rated": ranked by raw predicted score, the movies this user
+            is predicted to rate the highest, period (may include broadly
+            popular titles that aren't specifically matched to this user).
+          - "for_you": ranked by lift with a quality floor (see
+            _top_n_from_scores/MIN_SCORE_FOR_LIFT_RANKING), movies matched
+            to this user's specific profile rather than generic appeal.
+        """
+        return {
+            "top_rated": self._top_n_from_scores(scores, rated_movie_ids, top_n, baseline=None),
+            "for_you": self._top_n_from_scores(scores, rated_movie_ids, top_n, baseline=baseline),
+        }
+
+    def get_recommendations(
+        self, ratings: dict, top_n: int = 10, overrides: dict = None
+    ) -> dict:
+        """
+        End-to-end recommendations: hydrate -> forward_standard (encoder ->
+        genre bottleneck) -> apply any persisted/just-submitted genre
+        overrides on top of the AI-inferred bottleneck -> decode -> exclude
+        already-rated movies -> translate indices back to real MovieLens
+        IDs, in two parallel rankings (see _rank_both).
+
+        With no overrides this is exactly the old "Standard Mode" behavior
+        (forward_standard's own decode). With overrides, the encoder's
+        genre inference is kept for every genre the user *hasn't* adjusted,
+        and only the adjusted genres are shifted -- this replaces the old,
+        separate get_recommendations_from_profile (which fed a hand-built
+        override vector into forward_interactive standalone, bypassing the
+        encoder for the *entire* profile, not just the overridden genres).
+
+        Returns:
+            {"top_rated": [...], "for_you": [...]} -- see _rank_both.
+        """
+        vec = hydrate_sparse_input(ratings, self.id_mapping).to(self.device)
+        self.model.eval()
+        with torch.no_grad():
+            if overrides:
+                _, latent_profile = self.model.forward_standard(vec)
+                merged = self._merge_overrides_into_latent(latent_profile, overrides)
+                predictions = self.model.forward_interactive(merged)
+            else:
+                predictions, _ = self.model.forward_standard(vec)
+
+        rated_movie_ids = {int(k) for k in ratings}
+        return self._rank_both(predictions[0], rated_movie_ids, top_n, self.baseline_predictions)
+
+    def create_personalized_profile(self, ratings: dict, top_n: int = 10) -> dict:
+        """
+        One-time personalization fine-tune, run right after a user builds
+        their profile ("Build My Profile" on the Rate page).
+
+        Never touches self.model: ai_service.model is a single instance
+        shared across every concurrent request's inference calls (via
+        asyncio.to_thread, so genuinely concurrent threads), with no lock.
+        Fine-tuning in place would race with other users' inference and
+        would leak this user's ratings into everyone else's recommendations.
+        Instead this clones the model, fine-tunes only the clone against
+        this user's own known ratings (no held-out split -- the goal is a
+        personalization nudge, not a generalization eval), computes the
+        profile + recommendations from the clone, and lets the clone and its
+        optimizer be garbage-collected when this method returns.
+        """
+        from app.config.config import settings
+
+        clone = copy.deepcopy(self.model)
+        clone.train()
+        optimizer = torch.optim.Adam(
+            clone.parameters(), lr=settings.personalize_lr, weight_decay=1e-5
+        )
+
+        vec = hydrate_sparse_input(ratings, self.id_mapping).to(self.device)
+        known_mask = vec != 0
+
+        for _ in range(settings.personalize_epochs):
+            train_step(
+                clone,
+                optimizer,
+                vec,
+                vec,
+                known_mask,
+                lambda_reg=settings.train_lambda_reg,
+            )
+
+        clone.eval()
+        with torch.no_grad():
+            predictions, latent_profile = clone.forward_standard(vec)
+        clone_baseline = self._compute_baseline(clone)
+
+        profile = clone.extract_taste_profile(latent_profile[0], self.id_mapping.genres)
+        rated_movie_ids = {int(k) for k in ratings}
+        recommendations = self._top_n_from_scores(
+            predictions[0], rated_movie_ids, top_n, baseline=clone_baseline
+        )
+
+        return {"profile": profile, "recommendations": recommendations}
+
+    def explain_movie(self, movie_id: int, ratings: dict, overrides: dict = None) -> dict:
         """
         Human-Centered XAI for a single recommended movie:
           1. Hydrates the user's sparse ratings and runs forward_standard
-             to get the latent genre profile.
+             to get the latent genre profile, then applies any persisted
+             genre overrides so the rationale reflects the profile the user
+             is actually seeing (see get_profile), not the pre-edit one.
           2. Computes local feature importance restricted to the user's
              non-zero ratings only (never the full movie catalog) via
-             compute_local_feature_importance.
+             compute_local_feature_importance -- against the raw,
+             un-overridden signal, since this explains the AI's genuine
+             rating-driven inference, not the user's own manual adjustment.
           3. Generates the natural-language soft rationale string via
-             generate_soft_rationale.
+             generate_soft_rationale, using the override-adjusted profile.
 
         Args:
             movie_id: the real MovieLens movieId being explained (NOT a
                        dense index -- this is the boundary where the API's
                        real-world ID gets translated inward).
             ratings: the user's sparse {movieId: rating} dict.
+            overrides: persisted {genre_name: delta} adjustments, if any.
 
         Returns:
             {
@@ -316,10 +571,22 @@ class AIService:
         if target_idx is None:
             raise ValueError(f"movie_id {movie_id} is not present in the ID mapping.")
 
-        vec = hydrate_sparse_input(ratings, self.id_mapping)
+        vec = hydrate_sparse_input(ratings, self.id_mapping).to(self.device)
         self.model.eval()
         with torch.no_grad():
             _, latent_profile = self.model.forward_standard(vec)
+        latent_profile = self._merge_overrides_into_latent(latent_profile, overrides)
+
+        # Decode the (possibly override-adjusted) latent profile to get this
+        # user's actual predicted score for the target movie -- the same
+        # quantity _top_n_from_scores ranks with -- so the rationale's
+        # lift-based fallback (see generate_soft_rationale) describes the
+        # real reason this movie could have surfaced, not a re-derived
+        # approximation.
+        with torch.no_grad():
+            predictions = self.model.forward_interactive(latent_profile)
+        predicted_score = float(predictions[0, target_idx].item())
+        baseline_score = float(self.baseline_predictions[target_idx].item())
 
         importances_by_idx = compute_local_feature_importance(self.model, vec, target_idx)
         feature_importance = [
@@ -338,6 +605,8 @@ class AIService:
             target_movie_idx=target_idx,
             id_mapping=self.id_mapping,
             genre_mask_row=genre_mask_row,
+            predicted_score=predicted_score,
+            baseline_score=baseline_score,
         )
 
         return {

@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     train_epochs: int = 25
     train_lr: float = 0.01
     train_lambda_reg: float = 0.05
-    train_epsilon_clip: float = 0.15
+    personalize_epochs: int = 10
+    personalize_lr: float = 0.005
 
     # Comma-separated list of allowed frontend origins for CORS. Defaults to
     # the local Vite dev server ports; set FRONTEND_ORIGINS in production to

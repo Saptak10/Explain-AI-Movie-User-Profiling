@@ -16,16 +16,21 @@ export const authApi = {
 }
 
 export const moviesApi = {
-  popular: () => client.get('/api/movies/popular'),
+  popular: (excludeIds = []) =>
+    client.get('/api/movies/popular', { params: { exclude: excludeIds.join(',') } }),
 }
 
 export const aiApi = {
   submitRating:         (movie_id, rating, round = 0)    => client.post('/api/ratings', { movie_id, rating, round }),
   getRatings:           ()                               => client.get('/api/ratings'),
   getProfile:           ()                               => client.get('/api/profile'),
+  explainProfile:       ()                               => client.get('/api/profile/explain'),
   recommend:            (top_n = 10)                     => client.post('/api/recommend', { top_n }),
-  recommendFromProfile: (genre_weights, top_n = 10)      =>
-                          client.post('/api/recommend/edited-profile', { genre_weights, top_n }),
+  recommendFromProfile: (genre_deltas, top_n = 10)       =>
+                          client.post('/api/recommend/edited-profile', { genre_deltas, top_n }),
+  getOverrides:         ()                               => client.get('/api/profile/overrides'),
+  clearOverrides:       ()                               => client.delete('/api/profile/overrides'),
+  personalizeProfile:   (top_n = 10)                     => client.post('/api/profile/personalize', { top_n }),
   explain:              (movie_id)                       => client.post('/api/explain', { movie_id }),
   getImportance:        ()                               => client.get('/api/importance'),
   markEdited:           ()                               => client.post('/api/user/mark-edited'),

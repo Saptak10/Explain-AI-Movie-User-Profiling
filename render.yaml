@@ -4,7 +4,10 @@ services:
     runtime: python
     plan: free
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    # requirements.txt pins a CUDA-specific torch build (+cu130) for local
+    # GPU dev machines; Render's build host has no GPU, so strip that pin
+    # here and let pip resolve the plain CPU wheel from PyPI instead.
+    buildCommand: sed -e '/extra-index-url/d' -e 's/torch==2.12.0+cu130/torch==2.12.0/' requirements.txt > requirements.render.txt && pip install -r requirements.render.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: JWT_SECRET

@@ -38,6 +38,7 @@ from __future__ import annotations
 import csv
 import random
 from typing import Iterator
+import numpy as np
 
 import torch
 from torch.utils.data import IterableDataset
@@ -88,6 +89,30 @@ class RatingsStreamReader:
                 rating = float(raw_rating)
                 yield user_id, dense_idx, rating
 
+
+class BinaryRatingsStreamReader:
+    """
+    Streams ratings.npy memory-mapped row by row. 
+    Bypasses all string parsing and type-casting overhead.
+    """
+    def __init__(self, ratings_npy_path: str, id_mapping: IdMapping):
+        self.ratings_npy_path = ratings_npy_path
+        self.id_mapping = id_mapping
+
+    def __iter__(self) -> Iterator[tuple]:
+        # Open the file in read-only memory-mapped mode.
+        # This does NOT load the 400MB file into RAM; it streams it off the disk.
+        mmap_arr = np.load(self.ratings_npy_path, mmap_mode='r')
+        
+        for row in mmap_arr:
+            user_id = row['userId']
+            movie_id = row['movieId']
+            
+            dense_idx = self.id_mapping.movie_id_to_dense(movie_id)
+            if dense_idx is None:
+                continue  # Skip unknown movies
+                
+            yield user_id, dense_idx, row['rating']
 
 class UserAggregator:
     """
@@ -163,7 +188,7 @@ def hydrate_user_vector(
     rating_vector = torch.zeros(num_movies, dtype=torch.float32)
     mask_vector = torch.zeros(num_movies, dtype=torch.bool)
     for movie_idx, rating in ratings_for_user:
-        rating_vector[movie_idx] = rating
+        rating_vector[movie_idx] = float(rating)
         mask_vector[movie_idx] = True
     return rating_vector, mask_vector
 
@@ -257,11 +282,28 @@ class SparseUserVectorDataset(IterableDataset):
 
     def __iter__(self) -> Iterator[dict]:
         rng = random.Random(self.seed) if self.seed is not None else random.Random()
+        
+        # --- NEW WORKER LOGIC ---
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            worker_id = 0
+            num_workers = 1
+        else:
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+        # ------------------------
 
-        reader = RatingsStreamReader(self.ratings_csv_path, self.id_mapping)
+        npy_path = self.ratings_csv_path.replace('.csv', '.npy')
+        reader = BinaryRatingsStreamReader(npy_path, self.id_mapping)
         aggregator = UserAggregator(iter(reader))
 
         for user_id, ratings_for_user in aggregator:
+            # --- NEW WORKER FILTER ---
+            # Distribute users evenly across workers without splitting their ratings
+            if user_id % num_workers != worker_id:
+                continue
+            # -------------------------
+
             target_vector, known_mask = hydrate_user_vector(
                 ratings_for_user, self.id_mapping.num_movies
             )

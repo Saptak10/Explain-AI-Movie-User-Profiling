@@ -20,6 +20,17 @@ SUS_QUESTIONS = [
 ]
 
 
+def _compute_sus_score(rows: list) -> float | None:
+    """Standard SUS scoring formula; None if fewer than all 10 questions were answered."""
+    if len(rows) < 10:
+        return None
+    total = 0
+    for r in rows:
+        q, resp = r["question_idx"], r["response"]
+        total += (resp - 1) if q % 2 == 0 else (5 - resp)
+    return total * 2.5
+
+
 @router.get("/questions")
 async def get_questions():
     return {"questions": SUS_QUESTIONS}
@@ -37,7 +48,18 @@ async def submit_sus(req: SUSRequest, user_id: int = Depends(get_current_user)):
         "VALUES (?, ?, ?, ?)",
         (user_id, req.age_group, req.degree_job, req.netflix_experience),
     )
-    await db.execute("UPDATE users SET sus_done = 1 WHERE id = ?", (user_id,))
+
+    # Store the computed score directly on the user row too, not just the
+    # raw per-question responses -- lets a researcher query SUS scores
+    # straight from the database without re-deriving the formula.
+    rows = await db.fetchall(
+        "SELECT question_idx, response FROM sus_responses WHERE user_id = ? ORDER BY question_idx",
+        (user_id,),
+    )
+    score = _compute_sus_score(rows)
+    await db.execute(
+        "UPDATE users SET sus_done = 1, sus_score = ? WHERE id = ?", (score, user_id)
+    )
     return {"done": True}
 
 
@@ -49,10 +71,4 @@ async def get_results(user_id: int = Depends(get_current_user)):
         "WHERE user_id = ? ORDER BY question_idx",
         (user_id,),
     )
-    if len(rows) < 10:
-        return {"score": None}
-    total = 0
-    for r in rows:
-        q, resp = r["question_idx"], r["response"]
-        total += (resp - 1) if q % 2 == 0 else (5 - resp)
-    return {"score": total * 2.5}
+    return {"score": _compute_sus_score(rows)}
