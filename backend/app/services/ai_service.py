@@ -23,6 +23,7 @@ O(batch_size * num_movies) regardless of the 33M-row dataset size.
 """
 
 import copy
+import gc
 import random
 from pathlib import Path
 
@@ -175,9 +176,22 @@ class AIService:
             genre_mask=ck["genre_mask"],
         )
 
-        model = DualModeHCAIAutoEncoder(id_mapping, hidden_dim=ck["hidden_dim"])
-        model.load_state_dict(ck["state_dict"])
+        # Constructing under the meta device means nn.Linear's normal
+        # random-init weights are never actually allocated (meta tensors
+        # carry only shape/dtype, no storage) -- load_state_dict(assign=True)
+        # then makes the model's parameters *be* ck["state_dict"]'s tensors
+        # directly rather than copying values into a second, already-real
+        # set of tensors. Plain load_state_dict (copy semantics) held two
+        # full-size copies of every weight matrix in memory at once, which
+        # was enough to OOM a memory-constrained deploy (Render's 512MB
+        # free tier) even after the checkpoint itself was released.
+        with torch.device("meta"):
+            model = DualModeHCAIAutoEncoder(id_mapping, hidden_dim=ck["hidden_dim"])
+        model.load_state_dict(ck["state_dict"], assign=True)
         model.eval()
+
+        del ck
+        gc.collect()
 
         self._init(model, id_mapping)
 
