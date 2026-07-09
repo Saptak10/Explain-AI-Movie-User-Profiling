@@ -16,7 +16,22 @@ class Settings(BaseSettings):
     train_lambda_reg: float = 0.05
     train_epsilon_clip: float = 0.15
 
+    # Comma-separated list of allowed frontend origins for CORS. Defaults to
+    # the local Vite dev server ports; set FRONTEND_ORIGINS in production to
+    # the deployed frontend URL(s), e.g. "https://my-app.vercel.app".
+    frontend_origins: str = "http://localhost:5173,http://localhost:5174"
+
+    # If model_save_path doesn't exist on boot and this is set, it is
+    # downloaded before deciding whether to load or train -- lets a
+    # deployed backend start from a pre-trained checkpoint (e.g. a GitHub
+    # Release asset) without needing the multi-GB MovieLens CSVs at runtime.
+    model_download_url: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @property
+    def frontend_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.frontend_origins.split(",") if o.strip()]
 
 
 settings = Settings()

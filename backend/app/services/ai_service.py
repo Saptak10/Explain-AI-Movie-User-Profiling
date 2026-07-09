@@ -146,7 +146,10 @@ class AIService:
         loaded model always serves exactly the ID space it was trained on
         even if movies.csv has since changed on disk.
         """
-        ck = torch.load(self._save_path, weights_only=False)
+        # map_location=cpu: checkpoints may have been trained on a CUDA
+        # machine; this service only ever does small-batch CPU inference,
+        # so always remap tensors to CPU regardless of what trained them.
+        ck = torch.load(self._save_path, weights_only=False, map_location="cpu")
 
         id_mapping = IdMapping(
             movie_id_to_idx=ck["movie_id_to_idx"],

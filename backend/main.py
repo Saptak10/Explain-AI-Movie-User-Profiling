@@ -1,5 +1,7 @@
 import asyncio
 import os
+import urllib.request
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,11 +18,23 @@ app = FastAPI(title="Explain-AI Movie Profiling")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    allow_origins=settings.frontend_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _download_model_if_configured():
+    """Fetch a pre-trained checkpoint from settings.model_download_url when
+    the local file is missing -- used in deployments that ship a trained
+    model (e.g. a GitHub Release asset) instead of retraining on boot."""
+    if os.path.exists(settings.model_save_path) or not settings.model_download_url:
+        return
+    print(f"Downloading model checkpoint from {settings.model_download_url} …")
+    Path(settings.model_save_path).parent.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(settings.model_download_url, settings.model_save_path)
+    print("Model checkpoint downloaded.")
 
 
 @app.on_event("startup")
@@ -31,6 +45,7 @@ async def startup():
         settings.movies_csv_path,
         settings.ratings_csv_path,
     )
+    await asyncio.to_thread(_download_model_if_configured)
     if os.path.exists(settings.model_save_path):
         print("Loading saved model…")
         await asyncio.to_thread(ai_service.load)
