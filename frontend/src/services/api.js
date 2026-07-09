@@ -18,6 +18,8 @@ export const authApi = {
 export const moviesApi = {
   popular: (excludeIds = []) =>
     client.get('/api/movies/popular', { params: { exclude: excludeIds.join(',') } }),
+  search: (q) =>
+    client.get('/api/movies/search', { params: { q } }),
 }
 
 export const aiApi = {

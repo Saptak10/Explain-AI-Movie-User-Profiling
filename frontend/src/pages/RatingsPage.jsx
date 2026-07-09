@@ -10,6 +10,9 @@ export default function RatingsPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searching, setSearching] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -23,8 +26,34 @@ export default function RatingsPage() {
       .finally(() => setLoading(false))
   }, [])
 
+  // Debounced search-by-title, so a user can find and rate a specific
+  // movie even if it never showed up in the random popular-sample batch.
+  useEffect(() => {
+    const query = searchQuery.trim()
+    if (query.length < 2) {
+      setSearchResults([])
+      setSearching(false)
+      return
+    }
+    setSearching(true)
+    const timer = setTimeout(() => {
+      moviesApi.search(query)
+        .then(({ data }) => setSearchResults(data.movies))
+        .finally(() => setSearching(false))
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
   const handleRate = (movieId, star) => {
     setRatings(prev => ({ ...prev, [movieId]: star }))
+  }
+
+  // Adds a searched-up movie to the rateable grid (a no-op if it's
+  // already there, e.g. also present in the current popular sample).
+  const handleAddMovie = (movie) => {
+    setMovies(prev => (prev.some(m => m.id === movie.id) ? prev : [movie, ...prev]))
+    setSearchQuery('')
+    setSearchResults([])
   }
 
   // Swaps in a fresh batch of movies to rate, excluding the ones
@@ -95,6 +124,36 @@ export default function RatingsPage() {
             {saving ? 'Saving…' : 'Build My Profile →'}
           </button>
         </div>
+      </div>
+
+      <div className="movie-search">
+        <input
+          type="text"
+          className="movie-search-input"
+          placeholder="Search for a movie by name to rate it…"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+        />
+        {searchQuery.trim().length >= 2 && (
+          <div className="movie-search-results">
+            {searching && <div className="text-muted">Searching…</div>}
+            {!searching && searchResults.length === 0 && (
+              <div className="text-muted">No movies found.</div>
+            )}
+            {!searching && searchResults.map(m => (
+              <div key={m.id} className="movie-search-result">
+                <span>{m.title}</span>
+                <button
+                  className="btn-secondary"
+                  disabled={movies.some(mv => mv.id === m.id)}
+                  onClick={() => handleAddMovie(m)}
+                >
+                  {movies.some(mv => mv.id === m.id) ? 'Added' : 'Add'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="movie-grid">

@@ -16,7 +16,12 @@ app = FastAPI(title="Explain-AI Movie Profiling")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    # Matches any localhost/127.0.0.1 port rather than hardcoding 5173/5174 --
+    # Vite auto-increments to the next free port (5175, 5176, ...) whenever
+    # those are already taken, e.g. by another dev server or a previous run
+    # that didn't shut down, and a hardcoded allowlist breaks CORS for
+    # anyone whose Vite landed on a different port.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,12 +36,14 @@ async def startup():
         settings.movies_csv_path,
         settings.ratings_csv_path,
     )
-    if os.path.exists(settings.model_save_path):
-        print("Loading saved model…")
-        await asyncio.to_thread(ai_service.load)
-    else:
-        print("First run — training model (this may take a while on the full ml-latest dataset)…")
-        await asyncio.to_thread(ai_service.train_and_save)
+    if not os.path.exists(settings.model_save_path):
+        raise RuntimeError(
+            f"No trained model found at '{settings.model_save_path}'. "
+            "Run `python train.py` from the backend/ directory to train and "
+            "save a checkpoint before starting the server."
+        )
+    print("Loading saved model…")
+    await asyncio.to_thread(ai_service.load)
 
 
 app.include_router(auth_router, prefix="/api/auth",   tags=["auth"])
