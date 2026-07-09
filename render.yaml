@@ -5,9 +5,13 @@ services:
     plan: free
     rootDir: backend
     # requirements.txt pins a CUDA-specific torch build (+cu130) for local
-    # GPU dev machines; Render's build host has no GPU, so strip that pin
-    # here and let pip resolve the plain CPU wheel from PyPI instead.
-    buildCommand: sed -e '/extra-index-url/d' -e 's/torch==2.12.0+cu130/torch==2.12.0/' requirements.txt > requirements.render.txt && pip install -r requirements.render.txt
+    # GPU dev machines. Render's build host has no GPU, so drop that pin and
+    # install the dedicated CPU wheel instead -- plain `pip install torch`
+    # from PyPI (even without the +cu130 suffix) still pulls in ~1.5GB of
+    # bundled nvidia-cu13* runtime packages as dependencies on Linux, which
+    # blew past the free tier's 512MB RAM at boot. The /whl/cpu index serves
+    # a build with zero CUDA deps.
+    buildCommand: grep -v -e extra-index-url -e "^torch==" requirements.txt > requirements.render.txt && pip install -r requirements.render.txt && pip install --index-url https://download.pytorch.org/whl/cpu torch==2.12.0
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: JWT_SECRET
@@ -15,4 +19,4 @@ services:
       - key: MODEL_DOWNLOAD_URL
         value: https://github.com/Saptak10/Explain-AI-Movie-User-Profiling/releases/download/trainedmodel/model_best.pt
       - key: FRONTEND_ORIGINS
-        value: http://localhost:5173,http://localhost:5174
+        value: https://explain-ai-movie-user-profiling.vercel.app
