@@ -16,3 +16,12 @@ async def popular(exclude: str = ""):
     """
     exclude_ids = {int(x) for x in exclude.split(",") if x.strip().isdigit()}
     return {"movies": ai_service.get_popular_sample(exclude_ids)}
+
+
+@router.get("/search")
+async def search(q: str = ""):
+    """
+    Search movies by (partial) title, so a user can rate a specific movie
+    by name instead of only what appears in the popular sample.
+    """
+    return {"movies": ai_service.search_movies(q)}

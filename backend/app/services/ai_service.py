@@ -267,6 +267,35 @@ class AIService:
             candidates = self.popular_movies
         return random.sample(candidates, min(count, len(candidates)))
 
+    def search_movies(self, query: str, limit: int = 20) -> list:
+        """
+        Case-insensitive substring search over every movie's title (not just
+        the ~500-title popularity pool), so a user can find and rate a
+        specific movie by name on the Rate page even if it wasn't surfaced
+        in their random popular-sample batch. Titles starting with the query
+        are ranked above titles that merely contain it (e.g. "Matrix" finds
+        "Matrix, The (1999)" before "Animatrix, The (2003)").
+        """
+        query = query.strip().lower()
+        if not query:
+            return []
+
+        starts, contains = [], []
+        for idx, title in self.id_mapping.idx_to_title.items():
+            title_lower = title.lower()
+            if title_lower.startswith(query):
+                starts.append((idx, title))
+            elif query in title_lower:
+                contains.append((idx, title))
+
+        starts.sort(key=lambda pair: pair[1])
+        contains.sort(key=lambda pair: pair[1])
+        results = (starts + contains)[:limit]
+        return [
+            {"id": self.id_mapping.dense_to_movie_id(idx), "title": title}
+            for idx, title in results
+        ]
+
     # ── Inference ────────────────────────────────────────────────────────────
 
     def _merge_overrides_into_latent(

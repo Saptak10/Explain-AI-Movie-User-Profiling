@@ -18,7 +18,14 @@ app = FastAPI(title="Explain-AI Movie Profiling")
 
 app.add_middleware(
     CORSMiddleware,
+    # allow_origins covers the deployed frontend (settings.frontend_origins,
+    # e.g. the Vercel URL). allow_origin_regex separately matches any local
+    # Vite dev server port -- Vite auto-increments past 5173/5174 whenever
+    # those are taken, and a hardcoded allowlist would break CORS for
+    # anyone whose Vite landed on a different port. Starlette's
+    # CORSMiddleware allows an origin if it matches *either*.
     allow_origins=settings.frontend_origins_list,
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,12 +53,15 @@ async def startup():
         settings.ratings_csv_path,
     )
     await asyncio.to_thread(_download_model_if_configured)
-    if os.path.exists(settings.model_save_path):
-        print("Loading saved model…")
-        await asyncio.to_thread(ai_service.load)
-    else:
-        print("First run — training model (this may take a while on the full ml-latest dataset)…")
-        await asyncio.to_thread(ai_service.train_and_save)
+    if not os.path.exists(settings.model_save_path):
+        raise RuntimeError(
+            f"No trained model found at '{settings.model_save_path}'. "
+            "Run `python train.py` from the backend/ directory to train and "
+            "save a checkpoint before starting the server, or set "
+            "MODEL_DOWNLOAD_URL to fetch one automatically."
+        )
+    print("Loading saved model…")
+    await asyncio.to_thread(ai_service.load)
 
 
 app.include_router(auth_router, prefix="/api/auth",   tags=["auth"])
