@@ -1,0 +1,11 @@
+venv/
+vectorstore/
+app/database/ml-latest/
+app/database/*.db
+__pycache__/
+**/__pycache__/
+.vscode/
+.env
+uploads/
+notebooks/
+.DS_Store
