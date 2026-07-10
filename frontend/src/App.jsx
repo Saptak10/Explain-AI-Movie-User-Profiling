@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
+import Footer from './components/Footer'
 import Navbar from './components/Navbar'
 import { useAuth } from './context/AuthContext'
 import LoginPage from './pages/LoginPage'
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="/sus"       element={<Guard><SUSPage /></Guard>} />
         <Route path="*"          element={<Navigate to={user ? '/rate' : '/login'} replace />} />
       </Routes>
+      <Footer />
     </>
   )
 }
