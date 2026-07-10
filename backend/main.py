@@ -1,6 +1,7 @@
 import asyncio
 import os
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -32,35 +33,39 @@ app.add_middleware(
 )
 
 
-def _download_model_if_configured():
-    """Fetch a pre-trained checkpoint from settings.model_download_url when
-    the local file is missing -- used in deployments that ship a trained
-    model (e.g. a GitHub Release asset) instead of retraining on boot."""
-    if os.path.exists(settings.model_save_path) or not settings.model_download_url:
+def _download_onnx_bundle_if_configured():
+    """Fetch and extract a pre-exported ONNX bundle (zip of
+    model_standard.onnx(.data), model_interactive.onnx(.data),
+    id_mapping.json, importance_aux.npz -- see export_onnx.py on main) from
+    settings.model_download_url when onnx_dir's key file is missing. Lets a
+    deployed backend start without needing the full PyTorch checkpoint or
+    MovieLens CSVs at runtime."""
+    marker = Path(settings.onnx_dir) / "model_standard.onnx"
+    if marker.exists() or not settings.model_download_url:
         return
-    print(f"Downloading model checkpoint from {settings.model_download_url} …")
-    Path(settings.model_save_path).parent.mkdir(parents=True, exist_ok=True)
-    urllib.request.urlretrieve(settings.model_download_url, settings.model_save_path)
-    print("Model checkpoint downloaded.")
+    print(f"Downloading ONNX bundle from {settings.model_download_url} …")
+    Path(settings.onnx_dir).mkdir(parents=True, exist_ok=True)
+    zip_path = Path(settings.onnx_dir) / "_bundle.zip"
+    urllib.request.urlretrieve(settings.model_download_url, zip_path)
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(settings.onnx_dir)
+    zip_path.unlink()
+    print("ONNX bundle downloaded and extracted.")
 
 
 @app.on_event("startup")
 async def startup():
     db.init_db(settings.db_path)
-    ai_service.setup(
-        settings.model_save_path,
-        settings.movies_csv_path,
-        settings.ratings_csv_path,
-    )
-    await asyncio.to_thread(_download_model_if_configured)
-    if not os.path.exists(settings.model_save_path):
+    ai_service.setup(settings.onnx_dir)
+    await asyncio.to_thread(_download_onnx_bundle_if_configured)
+    if not (Path(settings.onnx_dir) / "model_standard.onnx").exists():
         raise RuntimeError(
-            f"No trained model found at '{settings.model_save_path}'. "
-            "Run `python train.py` from the backend/ directory to train and "
-            "save a checkpoint before starting the server, or set "
-            "MODEL_DOWNLOAD_URL to fetch one automatically."
+            f"No ONNX bundle found in '{settings.onnx_dir}'. Run "
+            "`python export_onnx.py` on the main branch (with a trained "
+            "checkpoint) to produce one, or set MODEL_DOWNLOAD_URL to fetch "
+            "one automatically."
         )
-    print("Loading saved model…")
+    print("Loading ONNX model…")
     await asyncio.to_thread(ai_service.load)
 
 

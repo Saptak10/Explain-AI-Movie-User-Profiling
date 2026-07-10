@@ -102,6 +102,10 @@ ml_models/**/*.safetensors
 *.feather
 *.arrow
 
+# ONNX export bundle (deployment branch) -- fetched at boot from a GitHub
+# Release via MODEL_DOWNLOAD_URL, see export_onnx.py / main.py
+backend/vectorstore/onnx/
+
 # Large datasets (commit only small sample/reference files)
 datasets/**/*.csv
 datasets/**/*.json

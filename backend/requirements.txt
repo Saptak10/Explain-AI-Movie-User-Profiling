@@ -4,12 +4,11 @@ pydantic==2.13.4
 pydantic-settings==2.14.1
 python-dotenv==1.2.2
 python-jose[cryptography]==3.5.0
-# CUDA build (matches an RTX 3060 Ti + CUDA 13.x driver). The plain PyPI
-# index only carries the CPU-only wheel; this extra index adds the GPU
-# build without removing PyPI as the source for every other package.
-# On a machine without an NVIDIA GPU, drop the +cu130 suffix and the
-# --extra-index-url line below to fall back to the CPU-only build.
---extra-index-url https://download.pytorch.org/whl/cu130
-torch==2.12.0+cu130
 numpy==2.4.6
-plotly
+# deployment branch only: this service loads a pre-exported ONNX bundle
+# (see export_onnx.py on main) via onnxruntime instead of torch.
+# `import torch` alone costs ~200MB of resident memory before touching any
+# data, which was the dominant reason the full-PyTorch service didn't fit
+# a memory-constrained free host -- onnxruntime's import footprint is far
+# lighter since it has no autograd/training machinery at all.
+onnxruntime==1.27.0

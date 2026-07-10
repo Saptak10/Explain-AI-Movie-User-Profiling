@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 
 from app.database import db
@@ -130,10 +130,19 @@ async def clear_overrides(user_id: int = Depends(get_current_user)):
 
 @router.post("/profile/personalize")
 async def personalize_profile(req: RecommendRequest, user_id: int = Depends(get_current_user)):
+    # This deployment serves an ONNX-converted checkpoint (see
+    # export_onnx.py / onnx_model.py) -- create_personalized_profile's
+    # gradient-descent fine-tune needs torch's autograd, which onnxruntime
+    # doesn't have. The frontend already falls back to the standard
+    # profile gracefully when this call fails (RatingsPage.jsx's
+    # handleSave), so a clean 501 here is a non-breaking degradation.
     ratings = await _get_ratings(user_id)
-    result = await asyncio.to_thread(
-        ai_service.create_personalized_profile, ratings, req.top_n
-    )
+    try:
+        result = await asyncio.to_thread(
+            ai_service.create_personalized_profile, ratings, req.top_n
+        )
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
     return result
 
 
