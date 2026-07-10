@@ -28,14 +28,15 @@ export const aiApi = {
   getProfile:           ()                               => client.get('/api/profile'),
   explainProfile:       ()                               => client.get('/api/profile/explain'),
   recommend:            (top_n = 10)                     => client.post('/api/recommend', { top_n }),
-  recommendFromProfile: (genre_deltas, top_n = 10)       =>
-                          client.post('/api/recommend/edited-profile', { genre_deltas, top_n }),
+  recommendFromProfile: (genre_deltas, top_n = 10, source = 'profile_page') =>
+                          client.post('/api/recommend/edited-profile', { genre_deltas, top_n, source }),
   getOverrides:         ()                               => client.get('/api/profile/overrides'),
   clearOverrides:       ()                               => client.delete('/api/profile/overrides'),
   personalizeProfile:   (top_n = 10)                     => client.post('/api/profile/personalize', { top_n }),
   explain:              (movie_id)                       => client.post('/api/explain', { movie_id }),
   getImportance:        ()                               => client.get('/api/importance'),
   markEdited:           ()                               => client.post('/api/user/mark-edited'),
+  setCondition:         (version)                        => client.post('/api/user/set-condition', { version }),
 }
 
 export const susApi = {

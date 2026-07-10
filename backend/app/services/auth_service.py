@@ -26,8 +26,9 @@ async def register(username: str, password: str) -> dict:
         raise HTTPException(status_code=400, detail="Username already taken")
     version = random.choice(["O", "N"])
     uid = await db.execute(
-        "INSERT INTO users (username, hashed_password, version) VALUES (?, ?, ?)",
-        (username, _hash(password), version),
+        "INSERT INTO users (username, hashed_password, version, active_version, current_round) "
+        "VALUES (?, ?, ?, ?, 0)",
+        (username, _hash(password), version, version),
     )
     return {"id": uid, "username": username, "version": version}
 

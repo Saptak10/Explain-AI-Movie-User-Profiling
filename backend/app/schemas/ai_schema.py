@@ -36,6 +36,15 @@ class GenreOverrideInput(BaseModel):
     """
     genre_deltas: dict[str, float] = Field(default_factory=dict)
     top_n: int = 10
+    # Which UI surface produced this edit -- 'movie_card' (a specific
+    # recommendation's Edit Preferences panel) or 'profile_page' (the main
+    # Profile page). Purely descriptive metadata for study-data logging;
+    # never affects how the deltas themselves are applied.
+    source: str = "profile_page"
+
+
+class ConditionSwitchRequest(BaseModel):
+    version: str
 
 
 class ExplainRequest(BaseModel):

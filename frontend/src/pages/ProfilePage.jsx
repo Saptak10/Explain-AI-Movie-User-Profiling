@@ -217,7 +217,7 @@ export default function ProfilePage() {
           const lvl = LEVELS.find(l => l.value === level) || LEVELS[2]
           genre_deltas[genre] = lvl.delta
         }
-        const { data } = await aiApi.recommendFromProfile(genre_deltas)
+        const { data } = await aiApi.recommendFromProfile(genre_deltas, 10, 'profile_page')
         setSavedOverrides(prev => {
           const next = { ...prev }
           for (const [genre, delta] of Object.entries(genre_deltas)) {
