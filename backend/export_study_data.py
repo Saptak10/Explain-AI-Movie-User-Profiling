@@ -12,6 +12,8 @@ Run from the backend/ directory:
 Produces, under --output-dir (default "export/"):
     users.csv               one row per registered account
     demographics.csv        age group / job or degree / Netflix experience
+    ratings.csv             each user's current rating per movie (always complete)
+    profile_overrides.csv   each user's current genre boost/suppress deltas (always complete)
     condition_switches.csv  every manual A/B condition switch (dev toggle)
     shown_movies.csv        every movie shown in the rate-page pool
     rating_events.csv       every rating submitted, with round + condition
@@ -27,9 +29,10 @@ Produces, under --output-dir (default "export/"):
     CODEBOOK.md             plain-language description of every file/column
     study_export_<ts>.zip   all of the above, zipped together
 
-None of this touches the running app or its live database beyond reading
-it -- it opens the SQLite file in read-only fashion via a plain SELECT
-pass over each table.
+Gracefully degrades against a database from before the event-logging
+tables existed -- those come back empty rather than erroring.
+
+Read-only: opens the SQLite file and runs a plain SELECT per table.
 """
 
 from __future__ import annotations
@@ -58,9 +61,18 @@ def _load_movie_titles(movies_csv_path: str) -> dict[int, str]:
     return titles
 
 
+_missing_tables: list[str] = []
+
+
 def _fetch_all(conn: sqlite3.Connection, sql: str) -> list[dict]:
+    """Returns [] instead of raising if the table doesn't exist yet."""
     conn.row_factory = sqlite3.Row
-    return [dict(r) for r in conn.execute(sql).fetchall()]
+    try:
+        return [dict(r) for r in conn.execute(sql).fetchall()]
+    except sqlite3.OperationalError as e:
+        table = sql.split("FROM", 1)[1].strip().split()[0]
+        _missing_tables.append(table)
+        return []
 
 
 def _write_csv(path: Path, rows: list[dict], columns: list[str]) -> None:
@@ -95,6 +107,7 @@ def export(db_path: str, movies_csv_path: str, output_dir: Path) -> Path:
 
     demographics = _fetch_all(conn, "SELECT * FROM demographics ORDER BY user_id")
     ratings = _fetch_all(conn, "SELECT * FROM ratings ORDER BY user_id, movie_id")
+    overrides = _fetch_all(conn, "SELECT * FROM profile_overrides ORDER BY user_id, genre")
     condition_switches = _fetch_all(conn, "SELECT * FROM condition_switches ORDER BY user_id, id")
     shown_movies = _fetch_all(conn, "SELECT * FROM shown_movies ORDER BY user_id, id")
     rating_events = _fetch_all(conn, "SELECT * FROM rating_events ORDER BY user_id, id")
@@ -103,9 +116,6 @@ def export(db_path: str, movies_csv_path: str, output_dir: Path) -> Path:
     sus_responses = _fetch_all(conn, "SELECT * FROM sus_responses ORDER BY user_id, question_idx")
     conn.close()
 
-    # Enrich rows that only store a movie_id with the title, and every row
-    # with the username, so a coworker doesn't need to cross-reference
-    # users.csv by hand for basic reading.
     for row in shown_movies:
         row["username"] = username_by_id.get(row["user_id"], "")
         row["title"] = titles.get(row["movie_id"], "")
@@ -123,6 +133,8 @@ def export(db_path: str, movies_csv_path: str, output_dir: Path) -> Path:
     for row in ratings:
         row["username"] = username_by_id.get(row["user_id"], "")
         row["title"] = titles.get(row["movie_id"], "")
+    for row in overrides:
+        row["username"] = username_by_id.get(row["user_id"], "")
     for row in sus_responses:
         row["username"] = username_by_id.get(row["user_id"], "")
         row["question_text"] = SUS_QUESTIONS[row["question_idx"]] if 0 <= row["question_idx"] < len(SUS_QUESTIONS) else ""
@@ -134,6 +146,8 @@ def export(db_path: str, movies_csv_path: str, output_dir: Path) -> Path:
                ["user_id", "username", "age_group", "degree_job", "netflix_experience"])
     _write_csv(output_dir / "ratings.csv", ratings,
                ["user_id", "username", "movie_id", "title", "rating"])
+    _write_csv(output_dir / "profile_overrides.csv", overrides,
+               ["user_id", "username", "genre", "delta"])
     _write_csv(output_dir / "condition_switches.csv", condition_switches,
                ["id", "user_id", "username", "version", "switched_at"])
     _write_csv(output_dir / "shown_movies.csv", shown_movies,
@@ -148,7 +162,7 @@ def export(db_path: str, movies_csv_path: str, output_dir: Path) -> Path:
     _write_csv(output_dir / "sus_responses.csv", sus_responses,
                ["user_id", "username", "question_idx", "question_text", "response"])
 
-    _write_user_summary(output_dir, users, profile_edits, ratings, shown_movies, recommendations)
+    _write_user_summary(output_dir, users, profile_edits, ratings, shown_movies, recommendations, overrides)
     _write_codebook(output_dir)
 
     zip_path = output_dir / f"study_export_{datetime.now():%Y%m%d_%H%M%S}.zip"
@@ -160,7 +174,7 @@ def export(db_path: str, movies_csv_path: str, output_dir: Path) -> Path:
     return zip_path
 
 
-def _write_user_summary(output_dir, users, profile_edits, ratings, shown_movies, recommendations):
+def _write_user_summary(output_dir, users, profile_edits, ratings, shown_movies, recommendations, overrides):
     edits_by_user = defaultdict(lambda: {"total": 0, "movie_card": 0, "profile_page": 0, "genres": set()})
     for e in profile_edits:
         s = edits_by_user[e["user_id"]]
@@ -168,10 +182,10 @@ def _write_user_summary(output_dir, users, profile_edits, ratings, shown_movies,
         s[e["source"]] = s.get(e["source"], 0) + 1
         s["genres"].add(e["genre"])
 
-    # Counted from the live `ratings` table (current state, always complete)
-    # rather than rating_events (the round-tagged history log, which is only
-    # complete for ratings submitted after that logging was added -- see
-    # CODEBOOK.md).
+    active_overrides_by_user = defaultdict(int)
+    for o in overrides:
+        active_overrides_by_user[o["user_id"]] += 1
+
     ratings_by_user = defaultdict(int)
     for r in ratings:
         ratings_by_user[r["user_id"]] += 1
@@ -191,27 +205,28 @@ def _write_user_summary(output_dir, users, profile_edits, ratings, shown_movies,
         rows.append({
             "user_id": uid,
             "username": u["username"],
-            "assigned_version": u["version"],
-            "current_active_version": u["active_version"],
-            "current_round": u["current_round"],
+            "assigned_version": u.get("version", ""),
+            "current_active_version": u.get("active_version", u.get("version", "")),
+            "current_round": u.get("current_round", 0),
             "movies_shown_count": shown_by_user[uid],
             "ratings_submitted_count": ratings_by_user[uid],
             "profile_edits_total": edits["total"],
             "profile_edits_from_movie_card": edits.get("movie_card", 0),
             "profile_edits_from_profile_page": edits.get("profile_page", 0),
             "distinct_genres_edited": len(edits["genres"]),
+            "genres_currently_overridden": active_overrides_by_user[uid],
             "recommendation_rounds_count": len(rec_calls_by_user[uid]),
-            "has_edited_flag": u["has_edited"],
-            "sus_done": u["sus_done"],
-            "sus_score": u["sus_score"],
+            "has_edited_flag": u.get("has_edited", ""),
+            "sus_done": u.get("sus_done", ""),
+            "sus_score": u.get("sus_score", ""),
         })
 
     _write_csv(output_dir / "user_summary.csv", rows, list(rows[0].keys()) if rows else [
         "user_id", "username", "assigned_version", "current_active_version", "current_round",
         "movies_shown_count", "ratings_submitted_count", "profile_edits_total",
         "profile_edits_from_movie_card", "profile_edits_from_profile_page",
-        "distinct_genres_edited", "recommendation_rounds_count", "has_edited_flag",
-        "sus_done", "sus_score",
+        "distinct_genres_edited", "genres_currently_overridden", "recommendation_rounds_count",
+        "has_edited_flag", "sus_done", "sus_score",
     ])
 
 
@@ -285,6 +300,17 @@ real ratings in ratings.csv but no corresponding rows here, so
 user_summary.csv's ratings_submitted_count is computed from ratings.csv,
 not this file.
 
+### profile_overrides.csv
+One row per (user, genre) currently overridden -- each genre's *latest*
+saved delta, straight from the table that actually drives that user's
+recommendations. Always complete, same relationship to profile_edits.csv
+as ratings.csv has to rating_events.csv: this is the current state (one
+row per genre, overwritten on every re-edit), profile_edits.csv is the
+full history of edit actions (only complete post-logging). If a genre
+isn't listed here for a user, it has no active override (AI-inferred
+value used as-is). user_summary.csv's genres_currently_overridden count
+is computed from this file.
+
 ### profile_edits.csv
 One row per genre touched by one edit action (clicking a boost/suppress
 button and then Apply/Get Recommendations). `delta` is the numeric
@@ -331,6 +357,12 @@ def main():
 
     zip_path = export(args.db, args.movies_csv, Path(args.output_dir))
     print(f"Wrote study data export to: {zip_path.resolve()}")
+    if _missing_tables:
+        print(
+            "\nNote: this database predates some study-logging tables, so the "
+            "following came back empty (users.active_version/current_round also "
+            "fall back to just `version`/0 if missing): " + ", ".join(sorted(set(_missing_tables)))
+        )
 
 
 if __name__ == "__main__":

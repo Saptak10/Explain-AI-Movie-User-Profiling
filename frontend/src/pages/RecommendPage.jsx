@@ -213,11 +213,7 @@ export default function RecommendPage() {
     const next = version === 'O' ? 'N' : 'O'
     localStorage.setItem(DEV_PREVIEW_KEY, next)
     setDevPreviewVersion(next)
-    // Stamps the switch server-side too (active_version + round reset), so
-    // every rating/edit/recommendation logged from here on is correctly
-    // attributed to the new condition for study-data export. Best-effort --
-    // a failed call only affects logging, not the preview itself.
-    aiApi.setCondition(next).catch(() => {})
+    aiApi.setCondition(next).catch(() => {}) // best-effort, logging only
   }
 
   const [topRated, setTopRated]             = useState(location.state?.topRated || [])

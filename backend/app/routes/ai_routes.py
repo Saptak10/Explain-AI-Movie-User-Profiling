@@ -18,9 +18,7 @@ from app.utils.jwt_utils import get_current_user
 router = APIRouter()
 
 
-# Fixed enum the frontend's LEVELS constant maps onto (see ProfilePage.jsx /
-# RecommendPage.jsx) -- used to attach a human-readable label to each logged
-# edit event without the frontend having to send it itself.
+# Matches the frontend's LEVELS constant (ProfilePage.jsx / RecommendPage.jsx).
 _LEVEL_LABELS = {
     -0.5:  "strong_decrease",
     -0.25: "slight_decrease",
@@ -56,7 +54,6 @@ async def _get_condition_round(user_id: int) -> tuple[str, int]:
 
 
 async def _advance_round(user_id: int, current_round: int) -> int:
-    """Increments and persists current_round, returning the new value."""
     new_round = current_round + 1
     await db.execute("UPDATE users SET current_round = ? WHERE id = ?", (new_round, user_id))
     return new_round
@@ -108,9 +105,6 @@ async def get_profile(user_id: int = Depends(get_current_user)):
     ratings = await _get_ratings(user_id)
     overrides = await _get_overrides(user_id)
     profile = await asyncio.to_thread(ai_service.get_profile, ratings, overrides)
-    # Snapshot the profile a researcher would actually see, so it can be
-    # queried straight from the database without re-deriving it through
-    # the API/model later.
     await db.execute(
         "INSERT INTO profile_snapshots (user_id, profile_json, updated_at) "
         "VALUES (?, ?, datetime('now')) "
@@ -148,14 +142,7 @@ async def recommend(req: RecommendRequest, user_id: int = Depends(get_current_us
 async def recommend_edited(req: GenreOverrideInput, user_id: int = Depends(get_current_user)):
     version, round_ = await _get_condition_round(user_id)
 
-    # Persist each submitted delta -- this is what makes an edit "stick"
-    # for every future /api/profile and /api/recommend call, not just this
-    # one response. A delta of exactly 0 (the "neutral" level) clears any
-    # existing override for that genre instead of storing a no-op row.
-    # Also append an immutable log row per genre touched, tagged with the
-    # round/condition active when the edit was made and which UI surface
-    # (movie card vs. profile page) it came from -- profile_overrides only
-    # ever holds each genre's *latest* value, not this history.
+    # delta == 0 ("neutral") clears any existing override instead of storing a no-op row.
     for genre, delta in req.genre_deltas.items():
         if delta == 0:
             await db.execute(
@@ -186,13 +173,11 @@ async def recommend_edited(req: GenreOverrideInput, user_id: int = Depends(get_c
 
 @router.get("/profile/overrides")
 async def get_overrides(user_id: int = Depends(get_current_user)):
-    """Raw persisted {genre: delta} overrides, so the UI can show which level is currently active per genre."""
     return {"overrides": await _get_overrides(user_id)}
 
 
 @router.delete("/profile/overrides")
 async def clear_overrides(user_id: int = Depends(get_current_user)):
-    """Resets a user's profile to the pure AI-inferred one, discarding all saved edits."""
     await db.execute("DELETE FROM profile_overrides WHERE user_id = ?", (user_id,))
     return {"status": "ok"}
 
@@ -221,21 +206,13 @@ async def importance(_: int = Depends(get_current_user)):
 
 @router.post("/user/mark-edited")
 async def mark_edited(user_id: int = Depends(get_current_user)):
-    """Record that the user has completed at least one preference edit."""
     await db.execute("UPDATE users SET has_edited = 1 WHERE id = ?", (user_id,))
     return {"status": "ok"}
 
 
 @router.post("/user/set-condition")
 async def set_condition(req: ConditionSwitchRequest, user_id: int = Depends(get_current_user)):
-    """
-    Marks a manual A/B condition switch for this account (used by the
-    frontend's dev-only preview toggle to run one participant through both
-    conditions of a within-subjects session). Resets current_round to 0 so
-    round numbering starts over under the new condition, and logs the
-    switch itself for an audit trail. Never touches `version`, the
-    permanent condition assigned at registration.
-    """
+    # Used by the dev-only preview toggle. Resets current_round; never touches `version`.
     await db.execute(
         "UPDATE users SET active_version = ?, current_round = 0 WHERE id = ?",
         (req.version, user_id),

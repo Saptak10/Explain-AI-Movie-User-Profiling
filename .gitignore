@@ -135,7 +135,7 @@ tensorboard/
 optuna_storage/
 *.db
 
-# Study data export (usernames + per-participant study data -- never commit)
+# Study data export
 backend/export/
 
 # ──────────────────────────────────────────────
