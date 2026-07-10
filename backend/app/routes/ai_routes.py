@@ -41,7 +41,8 @@ async def get_genres():
 @router.post("/ratings")
 async def submit_rating(req: RatingRequest, user_id: int = Depends(get_current_user)):
     await db.execute(
-        "INSERT OR REPLACE INTO ratings (user_id, movie_id, rating, round) VALUES (?, ?, ?, ?)",
+        "INSERT INTO ratings (user_id, movie_id, rating, round) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (user_id, movie_id) DO UPDATE SET rating = excluded.rating, round = excluded.round",
         (user_id, req.movie_id, req.rating, req.round),
     )
     return {"status": "ok"}
@@ -62,7 +63,7 @@ async def get_profile(user_id: int = Depends(get_current_user)):
     # the API/model later.
     await db.execute(
         "INSERT INTO profile_snapshots (user_id, profile_json, updated_at) "
-        "VALUES (?, ?, datetime('now')) "
+        "VALUES (?, ?, CURRENT_TIMESTAMP) "
         "ON CONFLICT(user_id) DO UPDATE SET profile_json = excluded.profile_json, "
         "updated_at = excluded.updated_at",
         (user_id, json.dumps(profile)),

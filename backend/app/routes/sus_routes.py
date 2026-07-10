@@ -40,12 +40,15 @@ async def get_questions():
 async def submit_sus(req: SUSRequest, user_id: int = Depends(get_current_user)):
     for idx, response in enumerate(req.responses):
         await db.execute(
-            "INSERT OR REPLACE INTO sus_responses (user_id, question_idx, response) VALUES (?, ?, ?)",
+            "INSERT INTO sus_responses (user_id, question_idx, response) VALUES (?, ?, ?) "
+            "ON CONFLICT (user_id, question_idx) DO UPDATE SET response = excluded.response",
             (user_id, idx, response),
         )
     await db.execute(
-        "INSERT OR REPLACE INTO demographics (user_id, age_group, degree_job, netflix_experience) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO demographics (user_id, age_group, degree_job, netflix_experience) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (user_id) DO UPDATE SET age_group = excluded.age_group, "
+        "degree_job = excluded.degree_job, netflix_experience = excluded.netflix_experience",
         (user_id, req.age_group, req.degree_job, req.netflix_experience),
     )
 

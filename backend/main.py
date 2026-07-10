@@ -55,7 +55,7 @@ def _download_onnx_bundle_if_configured():
 
 @app.on_event("startup")
 async def startup():
-    db.init_db(settings.db_path)
+    await db.init_db(settings.database_url)
     ai_service.setup(settings.onnx_dir)
     await asyncio.to_thread(_download_onnx_bundle_if_configured)
     if not (Path(settings.onnx_dir) / "model_standard.onnx").exists():

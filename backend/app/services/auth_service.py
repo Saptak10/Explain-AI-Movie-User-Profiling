@@ -29,7 +29,8 @@ async def register(username: str, password: str) -> dict:
     # condition) — N never edits, so edit_order stays NULL for them.
     edit_order = random.choice(["movie_first", "profile_first"]) if version == "O" else None
     uid = await db.execute(
-        "INSERT INTO users (username, hashed_password, version, edit_order) VALUES (?, ?, ?, ?)",
+        "INSERT INTO users (username, hashed_password, version, edit_order) VALUES (?, ?, ?, ?) "
+        "RETURNING id",
         (username, _hash(password), version, edit_order),
     )
     return {"id": uid, "username": username, "version": version, "edit_order": edit_order}

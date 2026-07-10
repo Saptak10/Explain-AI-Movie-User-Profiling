@@ -5,7 +5,13 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-secret-change-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expiry_hours: int = 24
-    db_path: str = "app/database/app.db"
+
+    # deployment branch: Postgres, not SQLite -- a local SQLite file has no
+    # persistent disk on Render's free web service tier and gets wiped on
+    # every cold-start restart (see app/database/db.py). Defaults to a
+    # local Postgres for anyone running this branch outside the deployed
+    # instance; set DATABASE_URL to override.
+    database_url: str = "postgresql://localhost/explain_ai_db"
 
     # deployment branch: this service only ever loads a pre-exported ONNX
     # bundle (see export_onnx.py on main) -- it never trains, so there are
